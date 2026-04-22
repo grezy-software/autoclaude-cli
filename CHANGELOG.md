@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.1.0...v1.1.1) (2026-04-22)
+
+
+### Bug Fixes
+
+* **cli:** accept --profile before or after the subcommand ([591a1f5](https://github.com/grezy-software/autoclaude-cli/commit/591a1f5d074870c4fabedbf9c6f76e7d3b0939bb))
+
 # [1.1.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.0.0...v1.1.0) (2026-04-22)
 
 
