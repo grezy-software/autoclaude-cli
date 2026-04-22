@@ -27,18 +27,26 @@ ProfileOption = Annotated[
 ]
 
 
-def _load(profile_flag: str | None) -> tuple[Config, Profile]:
+@app.callback()
+def _main(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Shared options. `--profile` works here or on any subcommand."""
+    ctx.obj = {"profile": profile}
+
+
+def _load(ctx: typer.Context, profile_flag: str | None) -> tuple[Config, Profile]:
+    resolved = profile_flag or (ctx.obj or {}).get("profile")
     cfg = Config.load()
-    return cfg, cfg.resolve(profile_flag)
+    return cfg, cfg.resolve(resolved)
 
 
 @app.command()
 def login(
+    ctx: typer.Context,
     profile: ProfileOption = None,
     api_base: Annotated[str | None, typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
 ) -> None:
     """Interactive: save api_base and api_key for the chosen profile."""
-    cfg, prof = _load(profile)
+    cfg, prof = _load(ctx, profile)
     if api_base:
         prof.api_base = api_base.rstrip("/")
     elif prof.name in BUILTIN_API_BASES and not prof.api_base:
@@ -59,9 +67,9 @@ def login(
 
 
 @app.command()
-def diag(profile: ProfileOption = None) -> None:
+def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Verify config, claude CLI, gh auth, repo checkout."""
-    _cfg, prof = _load(profile)
+    _cfg, prof = _load(ctx, profile)
     console.print(f"profile: [bold]{prof.name}[/bold]")
     console.print(f"api_base: {prof.api_base or '[red]missing[/red]'}")
     console.print(f"api_key set: {'yes' if prof.api_key else '[red]no[/red]'}")
@@ -76,11 +84,11 @@ def diag(profile: ProfileOption = None) -> None:
 
     try:
         with ApiClient(prof) as client:
-            ctx = client.context()
+            api_ctx = client.context()
     except ApiError as exc:
         console.print(f"[red]context fetch failed[/red]: {exc}")
         return
-    owner = ctx.get("owner") or {}
+    owner = api_ctx.get("owner") or {}
     console.print(f"resolved owner: {owner.get('email') or owner.get('username') or '?'}")
 
     plugins = list_installed()
@@ -88,9 +96,9 @@ def diag(profile: ProfileOption = None) -> None:
 
 
 @app.command("skills-install", hidden=False)
-def skills_install(profile: ProfileOption = None) -> None:
+def skills_install(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Install all Claude Code plugins the current plan requires."""
-    _cfg, prof = _load(profile)
+    _cfg, prof = _load(ctx, profile)
     try:
         with ApiClient(prof) as client:
             refs = client.plugin_refs()
@@ -112,18 +120,18 @@ def skills_install(profile: ProfileOption = None) -> None:
 
 
 @app.command()
-def status(profile: ProfileOption = None) -> None:
+def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Print the active profile and the last tick summary."""
-    _cfg, prof = _load(profile)
+    _cfg, prof = _load(ctx, profile)
     console.print(f"profile: {prof.name}")
     console.print(f"api_base: {prof.api_base}")
     try:
         with ApiClient(prof) as client:
-            ctx = client.context()
+            api_ctx = client.context()
     except ApiError as exc:
         console.print(f"[red]context fetch failed[/red]: {exc}")
         raise typer.Exit(code=1) from exc
-    plan = ctx.get("plan")
+    plan = api_ctx.get("plan")
     if plan:
         console.print(f"next job: {plan.get('job_slug')} ({len(plan.get('steps') or [])} steps, mode={plan.get('mode')})")
     else:
@@ -132,6 +140,7 @@ def status(profile: ProfileOption = None) -> None:
 
 @app.command()
 def tick(
+    ctx: typer.Context,
     profile: ProfileOption = None,
     repo: Annotated[
         Path | None,
@@ -139,7 +148,7 @@ def tick(
     ] = None,
 ) -> None:
     """Run one tick."""
-    cfg, prof = _load(profile)
+    cfg, prof = _load(ctx, profile)
     checkout = repo or (Path(prof.repo_checkout) if prof.repo_checkout else Path.cwd())
     if not (checkout / ".git").exists():
         console.print(f"[red]not a git repo[/red]: {checkout}")
