@@ -11,14 +11,29 @@ Local runner for [AutoClaude](https://github.com/grezy-software/grezy). Executes
 
 ## Install
 
+With [`uv`](https://docs.astral.sh/uv/) (recommended):
+
 ```bash
-pipx install autoclaude
+uv tool install autoclaude-cli
+```
+
+Or with [`pipx`](https://pipx.pypa.io):
+
+```bash
+pipx install autoclaude-cli
+```
+
+Don't have `uv` yet? Install it first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh          # macOS / Linux
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
 ```
 
 During development, install from source:
 
 ```bash
-pipx install --force ./
+uv tool install --force .      # or: pipx install --force ./
 ```
 
 ## Quickstart
