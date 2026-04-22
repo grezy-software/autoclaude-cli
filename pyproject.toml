@@ -82,8 +82,6 @@ lint.ignore = [
     "D101",             # Missing docstring in public class
     "D102",             # Missing docstring in public method
     "D103",             # Missing docstring in public function
-    "ANN101",           # Deprecated: self type annotation
-    "ANN102",           # Deprecated: cls type annotation
     "ANN401",           # Dynamically typed expressions (Any)
     "S603",             # subprocess untrusted input
     "S607",             # Starting a process with a partial executable path
