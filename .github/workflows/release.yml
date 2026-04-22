@@ -38,7 +38,7 @@ jobs:
         run: |
           set -o pipefail
           OUTPUT=$(npx semantic-release --dry-run 2>&1 | tee /dev/stderr)
-          NEXT=$(echo "$OUTPUT" | grep -oE 'The next release version is [0-9]+\.[0-9]+\.[0-9]+[^ ]*' | awk '{print $NF}' | head -n 1)
+          NEXT=$(echo "$OUTPUT" | grep -oiE 'the next release version is [0-9]+\.[0-9]+\.[0-9]+[^ ]*' | awk '{print $NF}' | head -n 1 || true)
           if [ -z "$NEXT" ]; then
             echo "No new release"
             echo "skip=true" >> $GITHUB_OUTPUT
