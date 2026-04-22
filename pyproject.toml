@@ -1,5 +1,5 @@
 [project]
-name = "autoclaude"
+name = "autoclaude-cli"
 version = "0.1.0"
 description = "Local runner for AutoClaude. Executes orchestration plans with your Claude Max/Pro subscription."
 readme = "README.md"
