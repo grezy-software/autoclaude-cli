@@ -22,6 +22,10 @@ BUILTIN_API_BASES: dict[str, str] = {
     "prod": "https://app.grezy.com",
     "local": "http://localhost:8000",
 }
+BUILTIN_FRONTEND_BASES: dict[str, str] = {
+    "prod": "https://app.grezy.com",
+    "local": "http://localhost:3000",
+}
 DEFAULT_PROFILE = "prod"
 
 
@@ -37,8 +41,13 @@ def config_path() -> Path:
 class Profile:
     name: str = DEFAULT_PROFILE
     api_base: str = BUILTIN_API_BASES[DEFAULT_PROFILE]
+    frontend_base: str = ""
     api_key: str = ""
     repo_checkout: str = ""
+
+    def resolved_frontend_base(self) -> str:
+        """Frontend URL for this profile, falling back to builtins then to api_base."""
+        return self.frontend_base or BUILTIN_FRONTEND_BASES.get(self.name, "") or self.api_base
 
 
 @dataclass
@@ -59,6 +68,7 @@ class Config:
             profiles[name] = Profile(
                 name=name,
                 api_base=raw.get("api_base", BUILTIN_API_BASES.get(name, "")),
+                frontend_base=raw.get("frontend_base", ""),
                 api_key=raw.get("api_key", ""),
                 repo_checkout=raw.get("repo_checkout", ""),
             )
@@ -82,13 +92,25 @@ class Config:
             self.profiles[name] = profile
         overrides = {
             "api_base": os.environ.get("AUTOCLAUDE_API_BASE", "").strip(),
+            "frontend_base": os.environ.get("AUTOCLAUDE_FRONTEND_BASE", "").strip(),
             "api_key": os.environ.get("AUTOCLAUDE_API_KEY", "").strip(),
         }
         if overrides["api_base"]:
             profile.api_base = overrides["api_base"]
+        if overrides["frontend_base"]:
+            profile.frontend_base = overrides["frontend_base"]
         if overrides["api_key"]:
             profile.api_key = overrides["api_key"]
         return profile
 
 
-__all__ = ["APP_NAME", "BUILTIN_API_BASES", "DEFAULT_PROFILE", "Config", "Profile", "config_dir", "config_path"]
+__all__ = [
+    "APP_NAME",
+    "BUILTIN_API_BASES",
+    "BUILTIN_FRONTEND_BASES",
+    "DEFAULT_PROFILE",
+    "Config",
+    "Profile",
+    "config_dir",
+    "config_path",
+]

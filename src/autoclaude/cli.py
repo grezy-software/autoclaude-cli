@@ -14,7 +14,7 @@ from rich.console import Console
 
 from autoclaude import __version__
 from autoclaude.api_client import ApiClient, ApiError
-from autoclaude.config import BUILTIN_API_BASES, DEFAULT_PROFILE, Config, Profile
+from autoclaude.config import BUILTIN_API_BASES, BUILTIN_FRONTEND_BASES, DEFAULT_PROFILE, Config, Profile
 from autoclaude.plugins import ensure_installed, list_installed
 from autoclaude.runner import run_tick as runner_run_tick
 
@@ -44,6 +44,7 @@ def login(
     ctx: typer.Context,
     profile: ProfileOption = None,
     api_base: Annotated[str | None, typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
+    frontend_base: Annotated[str | None, typer.Option("--frontend-base", help="Override the frontend URL for this profile.")] = None,
 ) -> None:
     """Interactive: save api_base and api_key for the chosen profile."""
     cfg, prof = _load(ctx, profile)
@@ -54,10 +55,18 @@ def login(
     if not prof.api_base:
         prof.api_base = typer.prompt("Server URL", default=BUILTIN_API_BASES.get(DEFAULT_PROFILE, "")).rstrip("/")
 
-    settings_url = f"{prof.api_base}/autoclaude/logged-in/settings/api-keys"
-    console.print(f"Opening [bold]{settings_url}[/bold]")
-    with contextlib.suppress(Exception):
-        webbrowser.open(settings_url)
+    if frontend_base:
+        prof.frontend_base = frontend_base.rstrip("/")
+    elif prof.name in BUILTIN_FRONTEND_BASES and not prof.frontend_base:
+        prof.frontend_base = BUILTIN_FRONTEND_BASES[prof.name]
+    if not prof.frontend_base:
+        prof.frontend_base = typer.prompt("Frontend URL", default=prof.api_base).rstrip("/")
+
+    settings_url = f"{prof.frontend_base}/autoclaude/logged-in/settings/api-keys"
+    console.print(f"API-key page: [bold]{settings_url}[/bold]")
+    if typer.confirm("Open it in your browser now?", default=True):
+        with contextlib.suppress(Exception):
+            webbrowser.open(settings_url)
     raw_key = typer.prompt("Paste your API key", hide_input=True).strip()
     prof.api_key = raw_key
     cfg.profiles[prof.name] = prof
