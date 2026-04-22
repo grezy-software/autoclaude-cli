@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.0.0...v1.1.0) (2026-04-22)
+
+
+### Features
+
+* **docs:** recommend uv for installation ([c4746db](https://github.com/grezy-software/autoclaude-cli/commit/c4746db482ea1482e09189c5c566c2ebecb51a2d))
+
 # 1.0.0 (2026-04-22)
 
 
