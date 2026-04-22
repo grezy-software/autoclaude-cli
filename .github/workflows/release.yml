@@ -50,7 +50,7 @@ jobs:
 
       - name: Install uv
         if: steps.version.outputs.skip == 'false'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
 
       - name: Set up Python
         if: steps.version.outputs.skip == 'false'
