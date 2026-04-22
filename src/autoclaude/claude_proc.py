@@ -7,7 +7,7 @@ session id and, when available, the cost.
 from __future__ import annotations
 
 import json
-import subprocess  # noqa: S404
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 

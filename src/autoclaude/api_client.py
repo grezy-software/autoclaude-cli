@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
 import httpx
 
@@ -19,7 +19,8 @@ class ApiError(Exception):
 class ApiClient:
     def __init__(self, profile: Profile, *, timeout: float = 30.0) -> None:
         if not profile.api_base:
-            raise ApiError(f"api_base is empty for profile {profile.name!r}")
+            msg = f"api_base is empty for profile {profile.name!r}"
+            raise ApiError(msg)
         self._client = httpx.Client(
             base_url=profile.api_base.rstrip("/"),
             timeout=timeout,
@@ -30,7 +31,7 @@ class ApiClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> ApiClient:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -42,8 +43,9 @@ class ApiClient:
                 payload = response.json()
             except Exception:  # noqa: BLE001
                 payload = response.text
+            msg = f"{response.request.method} {response.request.url} -> {response.status_code}"
             raise ApiError(
-                f"{response.request.method} {response.request.url} -> {response.status_code}",
+                msg,
                 status_code=response.status_code,
                 payload=payload,
             )

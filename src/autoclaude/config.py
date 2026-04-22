@@ -9,17 +9,12 @@ key, and repo checkout path. Profiles are resolvable via ``--profile`` or
 from __future__ import annotations
 
 import os
-import sys
+import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import tomli_w
 from platformdirs import user_config_path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover
-    import tomli as tomllib
 
 APP_NAME = "autoclaude"
 
@@ -74,10 +69,7 @@ class Config:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "active": self.active,
-            "profiles": {
-                name: {k: v for k, v in asdict(profile).items() if k != "name"}
-                for name, profile in self.profiles.items()
-            },
+            "profiles": {name: {k: v for k, v in asdict(profile).items() if k != "name"} for name, profile in self.profiles.items()},
         }
         with path.open("wb") as handle:
             tomli_w.dump(data, handle)

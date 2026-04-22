@@ -7,7 +7,7 @@ missing ones.
 
 from __future__ import annotations
 
-import subprocess  # noqa: S404
+import subprocess
 
 
 def _claude(*args: str) -> subprocess.CompletedProcess:

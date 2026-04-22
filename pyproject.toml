@@ -41,16 +41,117 @@ build-backend = "hatchling.build"
 packages = ["src/autoclaude"]
 
 [tool.ruff]
-line-length = 120
+output-format = "grouped"
+line-length = 150
+indent-width = 4
 target-version = "py311"
 
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM", "ANN", "S"]
-ignore = ["ANN101", "ANN102", "ANN401", "S603", "S607"]
+lint.select = [
+    "F", "E", "W", "C90", "I", "N", "D", "UP", "YTT", "ANN", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10",
+    "EM", "FA", "ISC", "ICN", "LOG", "G", "INP", "PIE", "T20", "PYI", "Q", "RSE", "RET", "SLF", "SLOT", "SIM", "TID", "INT",
+    "ARG", "PTH", "FIX", "ERA", "PGH", "PL", "TRY", "FLY", "PERF", "FURB", "RUF",
+]
+lint.ignore = [
+    # Ruff formatter recommendations
+    "W19",
+    "E111",
+    "E114",
+    "E117",
+    "D206",
+    "D300",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "COM812",
+    "COM819",
+    "ISC001",
+    "ISC002",
+    # Other
+    "PLR0913",          # Less than 5 arguments
+    "D107",             # Docstring in __init__
+    "D100",             # Module documentation
+    "D104",             # Docstring in public package
+    "PGH004",           # Noqa all
+    "RUF012",
+    "FIX002",
+    "T201",             # print
+    "T203",             # pprint
+    "G004",             # f string in logging statement
+    "D105",             # Docstring in magic method
+    "D101",             # Missing docstring in public class
+    "D102",             # Missing docstring in public method
+    "D103",             # Missing docstring in public function
+    "ANN101",           # Deprecated: self type annotation
+    "ANN102",           # Deprecated: cls type annotation
+    "ANN401",           # Dynamically typed expressions (Any)
+    "S603",             # subprocess untrusted input
+    "S607",             # Starting a process with a partial executable path
+    "TRY003",           # Exception message length
+    "EM101",            # Exception must not use a string literal
+    "EM102",            # Exception must not use an f-string literal
+    "PLR2004",          # Magic values in comparisons
+]
+
+lint.fixable = ["ALL"]
+lint.unfixable = []
+
+lint.exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+lint.pydocstyle.convention = "google"
+lint.mccabe.max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"*__init__.py" = [
+    "F401",      # Import in __all__
+    "F403",      # Unused import
+]
+"**/tests/**" = [
+    "S101",      # Use of assert (standard in pytest)
+    "ANN",       # Type annotations (pytest fixtures)
+    "D101",      # Missing docstring in public class
+    "D102",      # Missing docstring in public method
+    "D103",      # Missing docstring in public function
+    "INP001",    # Implicit namespace package
+]
+"**/test_*.py" = [
+    "S101",
+    "ANN",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+line-ending = "lf"
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.2.0",
     "pytest>=8.0.0",
     "pytest-httpx>=0.30.0",
-    "ruff>=0.7.0",
+    "ruff>=0.14.4",
 ]

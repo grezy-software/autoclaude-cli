@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import shutil
-import subprocess  # noqa: S404
+import subprocess
 import webbrowser
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
 
 from autoclaude import __version__
 from autoclaude.api_client import ApiClient, ApiError
-from autoclaude.config import BUILTIN_API_BASES, Config, DEFAULT_PROFILE
+from autoclaude.config import BUILTIN_API_BASES, DEFAULT_PROFILE, Config, Profile
 from autoclaude.plugins import ensure_installed, list_installed
 from autoclaude.runner import run_tick as runner_run_tick
 
@@ -21,12 +22,12 @@ app = typer.Typer(add_completion=False, help="Local runner for AutoClaude.")
 console = Console()
 
 ProfileOption = Annotated[
-    Optional[str],
+    str | None,
     typer.Option("--profile", "-p", help="Named profile to use. Defaults to $AUTOCLAUDE_PROFILE or 'prod'."),
 ]
 
 
-def _load(profile_flag: str | None):
+def _load(profile_flag: str | None) -> tuple[Config, Profile]:
     cfg = Config.load()
     return cfg, cfg.resolve(profile_flag)
 
@@ -34,7 +35,7 @@ def _load(profile_flag: str | None):
 @app.command()
 def login(
     profile: ProfileOption = None,
-    api_base: Annotated[Optional[str], typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
+    api_base: Annotated[str | None, typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
 ) -> None:
     """Interactive: save api_base and api_key for the chosen profile."""
     cfg, prof = _load(profile)
@@ -47,10 +48,8 @@ def login(
 
     settings_url = f"{prof.api_base}/autoclaude/logged-in/settings/api-keys"
     console.print(f"Opening [bold]{settings_url}[/bold]")
-    try:
+    with contextlib.suppress(Exception):
         webbrowser.open(settings_url)
-    except Exception:  # noqa: BLE001
-        pass
     raw_key = typer.prompt("Paste your API key", hide_input=True).strip()
     prof.api_key = raw_key
     cfg.profiles[prof.name] = prof
@@ -134,7 +133,10 @@ def status(profile: ProfileOption = None) -> None:
 @app.command()
 def tick(
     profile: ProfileOption = None,
-    repo: Annotated[Optional[Path], typer.Option("--repo", help="Repo checkout to run agents in. Defaults to CWD or the profile's saved checkout.")] = None,
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", help="Repo checkout to run agents in. Defaults to CWD or the profile's saved checkout."),
+    ] = None,
 ) -> None:
     """Run one tick."""
     cfg, prof = _load(profile)
