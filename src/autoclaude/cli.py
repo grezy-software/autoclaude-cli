@@ -1,0 +1,166 @@
+"""Typer entrypoint for autoclaude-cli."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess  # noqa: S404
+import webbrowser
+from pathlib import Path
+from typing import Annotated, Optional
+
+import typer
+from rich.console import Console
+
+from autoclaude import __version__
+from autoclaude.api_client import ApiClient, ApiError
+from autoclaude.config import BUILTIN_API_BASES, Config, DEFAULT_PROFILE
+from autoclaude.plugins import ensure_installed, list_installed
+from autoclaude.runner import run_tick as runner_run_tick
+
+app = typer.Typer(add_completion=False, help="Local runner for AutoClaude.")
+console = Console()
+
+ProfileOption = Annotated[
+    Optional[str],
+    typer.Option("--profile", "-p", help="Named profile to use. Defaults to $AUTOCLAUDE_PROFILE or 'prod'."),
+]
+
+
+def _load(profile_flag: str | None):
+    cfg = Config.load()
+    return cfg, cfg.resolve(profile_flag)
+
+
+@app.command()
+def login(
+    profile: ProfileOption = None,
+    api_base: Annotated[Optional[str], typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
+) -> None:
+    """Interactive: save api_base and api_key for the chosen profile."""
+    cfg, prof = _load(profile)
+    if api_base:
+        prof.api_base = api_base.rstrip("/")
+    elif prof.name in BUILTIN_API_BASES and not prof.api_base:
+        prof.api_base = BUILTIN_API_BASES[prof.name]
+    if not prof.api_base:
+        prof.api_base = typer.prompt("Server URL", default=BUILTIN_API_BASES.get(DEFAULT_PROFILE, "")).rstrip("/")
+
+    settings_url = f"{prof.api_base}/autoclaude/logged-in/settings/api-keys"
+    console.print(f"Opening [bold]{settings_url}[/bold]")
+    try:
+        webbrowser.open(settings_url)
+    except Exception:  # noqa: BLE001
+        pass
+    raw_key = typer.prompt("Paste your API key", hide_input=True).strip()
+    prof.api_key = raw_key
+    cfg.profiles[prof.name] = prof
+    cfg.active = prof.name
+    cfg.save()
+    console.print(f"[green]saved profile {prof.name!r}[/green] -> {prof.api_base}")
+
+
+@app.command()
+def diag(profile: ProfileOption = None) -> None:
+    """Verify config, claude CLI, gh auth, repo checkout."""
+    _cfg, prof = _load(profile)
+    console.print(f"profile: [bold]{prof.name}[/bold]")
+    console.print(f"api_base: {prof.api_base or '[red]missing[/red]'}")
+    console.print(f"api_key set: {'yes' if prof.api_key else '[red]no[/red]'}")
+    console.print(f"repo_checkout: {prof.repo_checkout or '[yellow]unset[/yellow]'}")
+
+    for binary in ("claude", "gh", "git"):
+        path = shutil.which(binary)
+        console.print(f"{binary}: {path or '[red]not found[/red]'}")
+
+    gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False)
+    console.print(f"gh auth: {'ok' if gh_status.returncode == 0 else '[red]NOT LOGGED IN[/red]'}")
+
+    try:
+        with ApiClient(prof) as client:
+            ctx = client.context()
+    except ApiError as exc:
+        console.print(f"[red]context fetch failed[/red]: {exc}")
+        return
+    owner = ctx.get("owner") or {}
+    console.print(f"resolved owner: {owner.get('email') or owner.get('username') or '?'}")
+
+    plugins = list_installed()
+    console.print(f"claude plugins: {len(plugins)} installed")
+
+
+@app.command("skills-install", hidden=False)
+def skills_install(profile: ProfileOption = None) -> None:
+    """Install all Claude Code plugins the current plan requires."""
+    _cfg, prof = _load(profile)
+    try:
+        with ApiClient(prof) as client:
+            refs = client.plugin_refs()
+    except ApiError as exc:
+        console.print(f"[red]plugin_refs fetch failed[/red]: {exc}")
+        raise typer.Exit(code=1) from exc
+    if not refs:
+        console.print("[dim]no plugins required[/dim]")
+        return
+    try:
+        installed = ensure_installed(refs)
+    except RuntimeError as exc:
+        console.print(f"[red]plugin install failed[/red]: {exc}")
+        raise typer.Exit(code=1) from exc
+    if installed:
+        console.print(f"[green]installed:[/green] {', '.join(installed)}")
+    else:
+        console.print("[dim]all required plugins already installed[/dim]")
+
+
+@app.command()
+def status(profile: ProfileOption = None) -> None:
+    """Print the active profile and the last tick summary."""
+    _cfg, prof = _load(profile)
+    console.print(f"profile: {prof.name}")
+    console.print(f"api_base: {prof.api_base}")
+    try:
+        with ApiClient(prof) as client:
+            ctx = client.context()
+    except ApiError as exc:
+        console.print(f"[red]context fetch failed[/red]: {exc}")
+        raise typer.Exit(code=1) from exc
+    plan = ctx.get("plan")
+    if plan:
+        console.print(f"next job: {plan.get('job_slug')} ({len(plan.get('steps') or [])} steps, mode={plan.get('mode')})")
+    else:
+        console.print("[yellow]no active plan[/yellow]")
+
+
+@app.command()
+def tick(
+    profile: ProfileOption = None,
+    repo: Annotated[Optional[Path], typer.Option("--repo", help="Repo checkout to run agents in. Defaults to CWD or the profile's saved checkout.")] = None,
+) -> None:
+    """Run one tick."""
+    cfg, prof = _load(profile)
+    checkout = repo or (Path(prof.repo_checkout) if prof.repo_checkout else Path.cwd())
+    if not (checkout / ".git").exists():
+        console.print(f"[red]not a git repo[/red]: {checkout}")
+        raise typer.Exit(code=2)
+    if repo is not None:
+        prof.repo_checkout = str(repo)
+        cfg.profiles[prof.name] = prof
+        cfg.save()
+    try:
+        with ApiClient(prof) as client:
+            exit_code = runner_run_tick(client, repo_checkout=checkout)
+    except ApiError as exc:
+        console.print(f"[red]api error[/red]: {exc}")
+        raise typer.Exit(code=1) from exc
+    if exit_code != 0:
+        raise typer.Exit(code=exit_code)
+
+
+@app.command()
+def version() -> None:
+    """Print the package version."""
+    console.print(__version__)
+
+
+if __name__ == "__main__":
+    app()
