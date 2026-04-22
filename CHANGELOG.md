@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.1.2...v1.2.0) (2026-04-22)
+
+
+### Features
+
+* **profiles:** single --url per profile, default hardcoded to prod ([0a94d97](https://github.com/grezy-software/autoclaude-cli/commit/0a94d972496363c395d78ae580d881d1bc9f610d))
+
 ## [1.1.2](https://github.com/grezy-software/autoclaude-cli/compare/v1.1.1...v1.1.2) (2026-04-22)
 
 
