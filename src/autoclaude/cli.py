@@ -14,17 +14,29 @@ from rich.console import Console
 
 from autoclaude import __version__
 from autoclaude.api_client import ApiClient, ApiError
-from autoclaude.config import BUILTIN_API_BASES, BUILTIN_FRONTEND_BASES, DEFAULT_PROFILE, Config, Profile
+from autoclaude.config import DEFAULT_URL, Config, Profile
 from autoclaude.plugins import ensure_installed, list_installed
 from autoclaude.runner import run_tick as runner_run_tick
+
+API_KEYS_PATH = "/logged-in/settings/api-keys"
 
 app = typer.Typer(add_completion=False, help="Local runner for AutoClaude.")
 console = Console()
 
 ProfileOption = Annotated[
     str | None,
-    typer.Option("--profile", "-p", help="Named profile to use. Defaults to $AUTOCLAUDE_PROFILE or 'prod'."),
+    typer.Option("--profile", "-p", help="Named profile to use. Defaults to $AUTOCLAUDE_PROFILE or 'default'."),
 ]
+
+
+def _normalize_url(raw: str) -> str:
+    """Add a scheme if the user left it off and strip trailing slashes."""
+    value = raw.strip().rstrip("/")
+    if not value:
+        return value
+    if "://" not in value:
+        value = ("http://" if value.startswith(("localhost", "127.")) else "https://") + value
+    return value
 
 
 @app.callback()
@@ -43,26 +55,17 @@ def _load(ctx: typer.Context, profile_flag: str | None) -> tuple[Config, Profile
 def login(
     ctx: typer.Context,
     profile: ProfileOption = None,
-    api_base: Annotated[str | None, typer.Option("--api-base", help="Override the server URL for this profile.")] = None,
-    frontend_base: Annotated[str | None, typer.Option("--frontend-base", help="Override the frontend URL for this profile.")] = None,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help=f"Override the base URL for this profile (default: {DEFAULT_URL})."),
+    ] = None,
 ) -> None:
-    """Interactive: save api_base and api_key for the chosen profile."""
+    """Interactive: save URL and API key for the chosen profile."""
     cfg, prof = _load(ctx, profile)
-    if api_base:
-        prof.api_base = api_base.rstrip("/")
-    elif prof.name in BUILTIN_API_BASES and not prof.api_base:
-        prof.api_base = BUILTIN_API_BASES[prof.name]
-    if not prof.api_base:
-        prof.api_base = typer.prompt("Server URL", default=BUILTIN_API_BASES.get(DEFAULT_PROFILE, "")).rstrip("/")
+    if url:
+        prof.url = _normalize_url(url)
 
-    if frontend_base:
-        prof.frontend_base = frontend_base.rstrip("/")
-    elif prof.name in BUILTIN_FRONTEND_BASES and not prof.frontend_base:
-        prof.frontend_base = BUILTIN_FRONTEND_BASES[prof.name]
-    if not prof.frontend_base:
-        prof.frontend_base = typer.prompt("Frontend URL", default=prof.api_base).rstrip("/")
-
-    settings_url = f"{prof.frontend_base}/autoclaude/logged-in/settings/api-keys"
+    settings_url = f"{prof.url}{API_KEYS_PATH}"
     console.print(f"API-key page: [bold]{settings_url}[/bold]")
     if typer.confirm("Open it in your browser now?", default=True):
         with contextlib.suppress(Exception):
@@ -72,7 +75,7 @@ def login(
     cfg.profiles[prof.name] = prof
     cfg.active = prof.name
     cfg.save()
-    console.print(f"[green]saved profile {prof.name!r}[/green] -> {prof.api_base}")
+    console.print(f"[green]saved profile {prof.name!r}[/green] -> {prof.url}")
 
 
 @app.command()
@@ -80,7 +83,7 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Verify config, claude CLI, gh auth, repo checkout."""
     _cfg, prof = _load(ctx, profile)
     console.print(f"profile: [bold]{prof.name}[/bold]")
-    console.print(f"api_base: {prof.api_base or '[red]missing[/red]'}")
+    console.print(f"url: {prof.url or '[red]missing[/red]'}")
     console.print(f"api_key set: {'yes' if prof.api_key else '[red]no[/red]'}")
     console.print(f"repo_checkout: {prof.repo_checkout or '[yellow]unset[/yellow]'}")
 
@@ -133,7 +136,7 @@ def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Print the active profile and the last tick summary."""
     _cfg, prof = _load(ctx, profile)
     console.print(f"profile: {prof.name}")
-    console.print(f"api_base: {prof.api_base}")
+    console.print(f"url: {prof.url}")
     try:
         with ApiClient(prof) as client:
             api_ctx = client.context()

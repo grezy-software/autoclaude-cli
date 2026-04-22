@@ -39,15 +39,16 @@ uv tool install --force .      # or: pipx install --force ./
 ## Quickstart
 
 ```bash
-# 1. Authenticate once. The CLI opens the API-key page in your browser.
-autoclaude login                      # picks the prod profile
-autoclaude --profile local login      # point at http://localhost:8000
+# 1. Authenticate once. Defaults to https://app.grezy.com. The CLI asks
+#    before opening the API-key page in your browser.
+autoclaude login
+autoclaude login --url localhost:3001        # point at a local frontend
 
 # 2. Verify everything is wired up.
 autoclaude diag
 
 # 3. Install the Claude Code plugins your team's jobs require.
-autoclaude skills install
+autoclaude skills-install
 
 # 4. Fire a tick. The server picks the next Job and plan.
 autoclaude tick
@@ -55,15 +56,16 @@ autoclaude tick
 
 ## Profiles
 
-`autoclaude` supports multiple named profiles (stored in `~/.config/autoclaude/config.toml`). Useful for switching between the hosted product and your local backend.
+`autoclaude` supports multiple named profiles (stored in `~/.config/autoclaude/config.toml`). Each profile holds one URL, its API key, and an optional repo checkout.
 
 ```bash
-autoclaude --profile prod  tick    # https://app.grezy.com
-autoclaude --profile local tick    # http://localhost:8000
-AUTOCLAUDE_PROFILE=local autoclaude tick
+autoclaude login                                        # default profile -> prod
+autoclaude --profile staging login --url https://stage.example.com
+autoclaude --profile staging tick
+AUTOCLAUDE_PROFILE=staging autoclaude tick
 ```
 
-Each profile stores its own `api_base`, `api_key`, and `repo_checkout`.
+`--url` accepts `localhost:3001` (http is assumed) or a full `https://…` URL. Override at runtime with `AUTOCLAUDE_URL` / `AUTOCLAUDE_API_KEY`.
 
 ## How it works
 

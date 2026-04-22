@@ -18,11 +18,11 @@ class ApiError(Exception):
 
 class ApiClient:
     def __init__(self, profile: Profile, *, timeout: float = 30.0) -> None:
-        if not profile.api_base:
-            msg = f"api_base is empty for profile {profile.name!r}"
+        if not profile.url:
+            msg = f"url is empty for profile {profile.name!r}"
             raise ApiError(msg)
         self._client = httpx.Client(
-            base_url=profile.api_base.rstrip("/"),
+            base_url=profile.url.rstrip("/"),
             timeout=timeout,
             headers={"Authorization": f"Api-Key {profile.api_key}"} if profile.api_key else {},
         )

@@ -1,9 +1,9 @@
 """Config + profile handling for autoclaude-cli.
 
-Config file lives at ``platformdirs.user_config_path('autoclaude') / config.toml``
-and holds one or more named profiles. A profile stores the server URL, API
-key, and repo checkout path. Profiles are resolvable via ``--profile`` or
-``AUTOCLAUDE_PROFILE``.
+Config lives at ``platformdirs.user_config_path('autoclaude') / config.toml``.
+A profile stores one URL (serving both the API and the frontend), the API key,
+and an optional repo checkout path. Profiles are resolvable via ``--profile``
+or ``AUTOCLAUDE_PROFILE``.
 """
 
 from __future__ import annotations
@@ -18,15 +18,8 @@ from platformdirs import user_config_path
 
 APP_NAME = "autoclaude"
 
-BUILTIN_API_BASES: dict[str, str] = {
-    "prod": "https://app.grezy.com",
-    "local": "http://localhost:8000",
-}
-BUILTIN_FRONTEND_BASES: dict[str, str] = {
-    "prod": "https://app.grezy.com",
-    "local": "http://localhost:3000",
-}
-DEFAULT_PROFILE = "prod"
+DEFAULT_URL = "https://app.grezy.com"
+DEFAULT_PROFILE = "default"
 
 
 def config_dir() -> Path:
@@ -40,14 +33,9 @@ def config_path() -> Path:
 @dataclass
 class Profile:
     name: str = DEFAULT_PROFILE
-    api_base: str = BUILTIN_API_BASES[DEFAULT_PROFILE]
-    frontend_base: str = ""
+    url: str = DEFAULT_URL
     api_key: str = ""
     repo_checkout: str = ""
-
-    def resolved_frontend_base(self) -> str:
-        """Frontend URL for this profile, falling back to builtins then to api_base."""
-        return self.frontend_base or BUILTIN_FRONTEND_BASES.get(self.name, "") or self.api_base
 
 
 @dataclass
@@ -67,8 +55,7 @@ class Config:
         for name, raw in (data.get("profiles") or {}).items():
             profiles[name] = Profile(
                 name=name,
-                api_base=raw.get("api_base", BUILTIN_API_BASES.get(name, "")),
-                frontend_base=raw.get("frontend_base", ""),
+                url=raw.get("url") or raw.get("api_base") or DEFAULT_URL,
                 api_key=raw.get("api_key", ""),
                 repo_checkout=raw.get("repo_checkout", ""),
             )
@@ -88,27 +75,21 @@ class Config:
         name = profile_flag or os.environ.get("AUTOCLAUDE_PROFILE") or self.active or DEFAULT_PROFILE
         profile = self.profiles.get(name)
         if profile is None:
-            profile = Profile(name=name, api_base=BUILTIN_API_BASES.get(name, ""))
+            profile = Profile(name=name)
             self.profiles[name] = profile
-        overrides = {
-            "api_base": os.environ.get("AUTOCLAUDE_API_BASE", "").strip(),
-            "frontend_base": os.environ.get("AUTOCLAUDE_FRONTEND_BASE", "").strip(),
-            "api_key": os.environ.get("AUTOCLAUDE_API_KEY", "").strip(),
-        }
-        if overrides["api_base"]:
-            profile.api_base = overrides["api_base"]
-        if overrides["frontend_base"]:
-            profile.frontend_base = overrides["frontend_base"]
-        if overrides["api_key"]:
-            profile.api_key = overrides["api_key"]
+        url_override = os.environ.get("AUTOCLAUDE_URL", "").strip()
+        api_key_override = os.environ.get("AUTOCLAUDE_API_KEY", "").strip()
+        if url_override:
+            profile.url = url_override
+        if api_key_override:
+            profile.api_key = api_key_override
         return profile
 
 
 __all__ = [
     "APP_NAME",
-    "BUILTIN_API_BASES",
-    "BUILTIN_FRONTEND_BASES",
     "DEFAULT_PROFILE",
+    "DEFAULT_URL",
     "Config",
     "Profile",
     "config_dir",
