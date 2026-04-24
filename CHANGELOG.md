@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.7.0...v1.8.0) (2026-04-24)
+
+
+### Features
+
+* **claude-proc:** pin Opus, detect bail marker, concise step summaries ([d168dd2](https://github.com/grezy-software/autoclaude-cli/commit/d168dd220e46f7d746c35eb8c5d2cd7969acf111))
+
 # [1.7.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.6.0...v1.7.0) (2026-04-24)
 
 
