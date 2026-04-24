@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.3.0...v1.4.0) (2026-04-24)
+
+
+### Features
+
+* **gh:** require GitHub CLI for git work and add preflight check ([a9e125a](https://github.com/grezy-software/autoclaude-cli/commit/a9e125a5a2827bd53c640342e02a36174954f30b))
+
 # [1.3.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.2.0...v1.3.0) (2026-04-24)
 
 
