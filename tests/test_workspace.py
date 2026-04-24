@@ -11,6 +11,7 @@ from autoclaude.workspace import (
     AUTOCLAUDE_HOME_ENV,
     Workspace,
     WorkspaceError,
+    _canonical_github_clone_url,
     derive_slug,
     workspace_home,
 )
@@ -165,6 +166,85 @@ def test_configure_github_remote_noop_on_empty(tmp_path) -> None:
         check=True,
     )
     assert "github" not in remotes.stdout.split()
+
+
+_CANONICAL_URL = "https://github.com/soaria-app/soaria.git"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "soaria-app/soaria",
+        "soaria-app/soaria.git",
+        "https://github.com/soaria-app/soaria",
+        "https://github.com/soaria-app/soaria.git",
+        "http://github.com/soaria-app/soaria",
+        "https://www.github.com/soaria-app/soaria",
+        "git@github.com:soaria-app/soaria.git",
+        "ssh://git@github.com/soaria-app/soaria.git",
+        # The exact double-prefix bug from the production incident.
+        "https://github.com/https://github.com/soaria-app/soaria.git",
+        # Whitespace and trailing slash.
+        "  soaria-app/soaria/  ",
+    ],
+)
+def test_canonical_github_clone_url_normalises(value: str) -> None:
+    assert _canonical_github_clone_url(value) == _CANONICAL_URL
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "   ",
+        "soaria-app",  # missing repo
+        "https://github.com/",  # missing owner/repo
+        "https://gitlab.com/owner/repo",  # wrong host stays as `owner` segment only
+        "not even close",
+    ],
+)
+def test_canonical_github_clone_url_rejects_malformed(value: str) -> None:
+    with pytest.raises(ValueError):
+        _canonical_github_clone_url(value)
+
+
+def test_configure_github_remote_recovers_from_double_prefix(tmp_path) -> None:
+    """The production bug: server sent `https://github.com/<full-url>`; CLI must fix it."""
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_source(source, home=tmp_path / "home")
+    workspace.sync(source)
+
+    # Seed a broken remote as if a previous tick ran the buggy URL builder.
+    subprocess.run(
+        [
+            "git",
+            "remote",
+            "add",
+            "github",
+            "https://github.com/https://github.com/soaria-app/soaria.git",
+        ],
+        cwd=str(workspace.clone_path),
+        check=True,
+    )
+
+    workspace.configure_github_remote("https://github.com/soaria-app/soaria.git")
+
+    url = subprocess.run(
+        ["git", "remote", "get-url", "github"],
+        cwd=str(workspace.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert url.stdout.strip() == _CANONICAL_URL
+
+
+def test_configure_github_remote_raises_on_garbage(tmp_path) -> None:
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_source(source, home=tmp_path / "home")
+    workspace.sync(source)
+    with pytest.raises(WorkspaceError):
+        workspace.configure_github_remote("not a repo at all")
 
 
 def test_create_worktree_replaces_stale_directory(tmp_path) -> None:

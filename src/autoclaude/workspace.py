@@ -41,6 +41,11 @@ _GITHUB_REMOTE_NAME = "github"
 _SLUG_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _SLUG_MAX_LENGTH = 48
 
+# Owner/repo segments: letters, digits, dots, underscores, hyphens. Matches
+# what GitHub accepts; deliberately loose because we validate by re-emitting
+# a canonical URL, not by rejecting spelling variants.
+_OWNER_REPO_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9._-]+?)$")
+
 
 def workspace_home() -> Path:
     """Return the autoclaude workspace root (``~/.autoclaude`` by default)."""
@@ -131,7 +136,7 @@ class Workspace:
         return self.clone_path
 
     def configure_github_remote(self, github_repo: str) -> None:
-        """Attach a ``github`` remote pointing at ``github.com/<github_repo>.git``.
+        """Attach a ``github`` remote pointing at ``github.com/<owner>/<repo>.git``.
 
         ``origin`` stays pinned to the user's local source checkout so
         ``sync`` keeps working against the user's working copy. ``gh`` prefers
@@ -140,12 +145,21 @@ class Workspace:
         list`` / ``gh pr create`` a real GitHub context without disturbing
         the local-path fetch flow.
 
+        ``github_repo`` is accepted in any common form (``owner/repo``, a
+        full HTTPS URL, or an SSH URL) and normalised to the canonical
+        HTTPS clone URL. Malformed values (e.g. the server double-prefixed
+        ``https://github.com/https://github.com/...``) are rejected rather
+        than stored, since they break every later ``gh`` call.
+
         Idempotent: creates the remote on first call, ``set-url`` on
         subsequent calls. No-op on empty ``github_repo``.
         """
         if not github_repo:
             return
-        url = f"https://github.com/{github_repo}.git"
+        try:
+            url = _canonical_github_clone_url(github_repo)
+        except ValueError as exc:
+            raise WorkspaceError(f"invalid github_repo {github_repo!r}: {exc}") from exc
         existing = _git(["remote", "get-url", _GITHUB_REMOTE_NAME], cwd=self.clone_path, check=False)
         if existing.returncode == 0:
             if existing.stdout.strip() == url:
@@ -197,6 +211,80 @@ class Workspace:
         if worktree.path.exists():
             shutil.rmtree(worktree.path, ignore_errors=True)
         _git(["worktree", "prune"], cwd=self.clone_path, check=False)
+
+
+_URL_SCHEMES: tuple[str, ...] = (
+    "https://",
+    "http://",
+    "git+https://",
+    "ssh://",
+    "git+ssh://",
+)
+_URL_HOSTS: tuple[str, ...] = ("github.com/", "www.github.com/")
+
+
+def _strip_one_prefix(path: str) -> str:
+    """Remove one recognised scheme / user-info / host prefix, returning the remainder.
+
+    Returns ``path`` unchanged when nothing matches, which the caller uses as
+    the loop-terminating fixed point.
+    """
+    lowered = path.lower()
+    for scheme in _URL_SCHEMES:
+        if lowered.startswith(scheme):
+            return path[len(scheme) :]
+    if lowered.startswith("git@github.com:"):
+        return "github.com/" + path.split(":", 1)[1]
+    if lowered.startswith("git@github.com/"):
+        return "github.com/" + path[len("git@github.com/") :]
+    for host in _URL_HOSTS:
+        if lowered.startswith(host):
+            return path[len(host) :]
+    return path
+
+
+def _canonical_github_clone_url(raw: str) -> str:
+    """Normalise any common ``github_repo`` shape to ``https://github.com/owner/repo.git``.
+
+    Accepts:
+      - ``owner/repo`` or ``owner/repo.git``
+      - ``https://github.com/owner/repo`` / ``...repo.git``
+      - ``http://github.com/owner/repo`` (upgraded to HTTPS)
+      - ``git@github.com:owner/repo.git`` (SSH form)
+      - Any of the above wrapped in whitespace.
+
+    Defends against the server-side double-prefix bug that produced
+    ``https://github.com/https://github.com/owner/repo.git`` by stripping
+    every ``github.com/`` (or SSH ``github.com:``) prefix, not just the
+    first one, before validating ``owner/repo``.
+
+    Raises ``ValueError`` when no ``owner/repo`` pair can be recovered.
+    """
+    stripped = raw.strip()
+    if not stripped:
+        msg = "empty string"
+        raise ValueError(msg)
+
+    # Iteratively peel the outermost prefix (scheme, user-info, or host) until
+    # stable. One-pass stripping is not enough for the double-prefix bug where
+    # a second URL is nested after the first `github.com/` hop.
+    path = stripped
+    while True:
+        stepped = _strip_one_prefix(path)
+        if stepped == path:
+            break
+        path = stepped
+    # At this point `path` should be `owner/repo` (possibly with `.git`
+    # or a trailing slash or URL junk we refuse to guess at).
+    path = path.rstrip("/")
+    if path.lower().endswith(".git"):
+        path = path[: -len(".git")]
+    match = _OWNER_REPO_RE.match(path)
+    if match is None:
+        msg = f"cannot extract owner/repo from {raw!r}"
+        raise ValueError(msg)
+    owner, repo = match.group(1), match.group(2)
+    return f"https://github.com/{owner}/{repo}.git"
 
 
 def _require_gh() -> None:
