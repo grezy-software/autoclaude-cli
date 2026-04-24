@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
 _log = get_logger("runner")
 
-_SUMMARY_CHARS = 1000
 _ERROR_CHARS = 2000
 _RESUMPTION_SUMMARY_MAX = 500
 _PROMPT_ACTION_CHARS = 8_000
@@ -293,12 +292,16 @@ def _execute_steps(
         storage.write_step_streams(state.tick_id, step_id, stdout=result.stdout, stderr=result.stderr)
         state.total_cost += result.total_cost_usd
         state.total_tokens += result.token_cost_estimate
-        # Prefer Claude's `result` text; fall back to the stdout tail only when the JSON
-        # wasn't parseable (crash/malformed run), so the tick UI gets a human-readable line
-        # instead of a raw JSON blob trimmed mid-word.
-        summary = (result.summary or result.stdout[-_SUMMARY_CHARS:]) if result.ok else ""
-        summary = summary[:_SUMMARY_CHARS]
-        error_log = "" if result.ok else (result.stderr or result.stdout)[-_ERROR_CHARS:]
+        # `result.summary` is already a one-line takeaway capped for dashboard display.
+        # Showing it on both success and failure keeps the Steps table informative
+        # (e.g. the bail reason) without leaking the raw JSON blob we used to tail.
+        summary = result.summary
+        if result.ok:
+            error_log = ""
+        elif result.fail_reason:
+            error_log = result.fail_reason
+        else:
+            error_log = (result.stderr or result.stdout)[-_ERROR_CHARS:]
         storage.append_history(
             {
                 "event": "step_closed",

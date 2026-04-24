@@ -3,12 +3,23 @@
 ``run_step`` spawns ``claude -p <prompt> --output-format json`` via
 ``subprocess.Popen`` and tees each stdout/stderr line to the autoclaude
 logger in real time. The full streams are still buffered in memory so
-the final JSON can be parsed for ``session_id`` and ``total_cost_usd``.
+the final JSON can be parsed for ``session_id``, cost, and the
+human-readable ``result`` text.
+
+Failure detection has three layers:
+
+1. ``returncode != 0`` -- the claude subprocess crashed.
+2. ``is_error: true`` in the parsed JSON -- claude itself signalled an
+   error (auth failure, rate limit, malformed prompt).
+3. The ``[autoclaude:fail] <reason>`` marker in the ``result`` text --
+   the agent chose to bail out on a task it could not complete. Agents
+   are expected to emit this on its own line when they stop short.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -19,6 +30,21 @@ from typing import IO
 from autoclaude.logger import get_logger
 
 _log = get_logger("claude")
+
+# All agent steps run on Opus: agents are the product surface, and the Haiku
+# side-model that claude-code otherwise spins up for routing/summarisation adds
+# a failure mode (e.g. image-fetching) we cannot debug from here. Worth the cost.
+_AGENT_MODEL = "opus"
+
+# Max chars for the per-step summary shipped to the dashboard. Kept short so
+# the Steps table shows a single-line takeaway rather than a wall of text.
+_SHORT_SUMMARY_CHARS = 240
+
+# Convention for agents that hit an unrecoverable precondition (missing remote,
+# auth failure detected mid-run, etc.). When the agent ends its response with
+# this marker on its own line, the runner treats the step as failed even though
+# the claude subprocess exited cleanly.
+_BAIL_MARKER_RE = re.compile(r"^\s*\[autoclaude:fail\]\s*(?P<reason>.*?)\s*$", re.MULTILINE)
 
 # Billing-type failures look like bugs to an exit-code-only checker. These
 # patterns let us flag them so they are not counted as retries and the user
@@ -60,9 +86,13 @@ class ClaudeResult:
     token_cost_estimate: int = 0
     duration_ms: int = 0
     token_exhausted: bool = False
-    # Human-readable text pulled from the `result` field of `claude -p --output-format json`.
-    # Falls back to empty string when the JSON couldn't be parsed (error case).
+    # One-line takeaway for the Steps table (capped at `_SHORT_SUMMARY_CHARS`).
+    # Derived from the `result` field of the claude JSON, or the bail reason
+    # when the agent raised the fail marker.
     summary: str = ""
+    # Reason string extracted from the `[autoclaude:fail]` marker, when the
+    # agent requested a tick-level failure. Empty otherwise.
+    fail_reason: str = ""
 
 
 def _tee_stream(stream: IO[str], source: str, *, buffer: list[str], step_id: int | None) -> None:
@@ -89,7 +119,15 @@ def run_step(
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []
     proc = subprocess.Popen(
-        ["claude", "-p", prompt, "--output-format", "json"],
+        [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--model",
+            _AGENT_MODEL,
+        ],
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -142,11 +180,11 @@ def run_step(
     stderr_text = "".join(stderr_buffer)
     session_id, cost, tokens, parsed = _parse_result_metadata(stdout_text)
     token_exhausted = detect_token_exhaustion(stdout_text, stderr_text, parsed)
-    summary = ""
-    if isinstance(parsed, dict):
-        raw_summary = parsed.get("result")
-        if isinstance(raw_summary, str):
-            summary = raw_summary.strip()
+    result_text = _extract_result_text(parsed)
+    fail_reason = _extract_fail_marker(result_text)
+    is_error_flag = bool(parsed.get("is_error")) if isinstance(parsed, dict) else False
+    summary = _build_short_summary(result_text, fail_reason=fail_reason, stderr=stderr_text, returncode=returncode)
+    ok = returncode == 0 and not is_error_flag and not fail_reason
     _log.info(
         "claude subprocess exited rc=%s in %sms cost=%.6f tokens=%s",
         returncode,
@@ -162,11 +200,13 @@ def run_step(
                 "total_cost_usd": cost,
                 "token_cost_estimate": tokens,
                 "session_id": session_id,
+                "is_error": is_error_flag,
+                "fail_reason": fail_reason,
             },
         },
     )
     return ClaudeResult(
-        ok=returncode == 0,
+        ok=ok,
         stdout=stdout_text,
         stderr=stderr_text,
         session_id=session_id,
@@ -175,6 +215,7 @@ def run_step(
         duration_ms=duration_ms,
         token_exhausted=token_exhausted,
         summary=summary,
+        fail_reason=fail_reason,
     )
 
 
@@ -232,3 +273,79 @@ def _parse_result_metadata(stdout_text: str) -> tuple[str, float, int, dict | No
         cost = 0.0
     tokens = _extract_token_total(parsed)
     return session_id, cost, tokens, parsed
+
+
+def _extract_result_text(parsed: dict | None) -> str:
+    """Pull the human-readable assistant message from a parsed claude JSON."""
+    if not isinstance(parsed, dict):
+        return ""
+    raw = parsed.get("result")
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
+
+
+def _extract_fail_marker(result_text: str) -> str:
+    """Return the reason string when the agent emitted ``[autoclaude:fail] ...``.
+
+    Empty string when the marker is absent. The marker must appear on its own
+    line to avoid false positives from prose that mentions the word ``fail``.
+    """
+    if not result_text:
+        return ""
+    match = _BAIL_MARKER_RE.search(result_text)
+    if match is None:
+        return ""
+    return match.group("reason").strip()
+
+
+def _build_short_summary(
+    result_text: str,
+    *,
+    fail_reason: str,
+    stderr: str,
+    returncode: int,
+) -> str:
+    """Compose a one-line summary shown in the Steps table.
+
+    Preference order: explicit bail reason, first non-empty paragraph of
+    claude's ``result`` text, first line of stderr, then a generic
+    ``rc=<n>`` fallback. Never returns raw JSON from stdout -- that used to
+    leak into the dashboard when the result text was missing.
+    """
+    if fail_reason:
+        return _truncate(fail_reason)
+    candidate = _first_paragraph(result_text)
+    if candidate:
+        return _truncate(candidate)
+    stderr_line = _first_line(stderr)
+    if stderr_line:
+        return _truncate(stderr_line)
+    return f"claude exited rc={returncode}"
+
+
+def _truncate(text: str) -> str:
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= _SHORT_SUMMARY_CHARS:
+        return collapsed
+    return collapsed[: _SHORT_SUMMARY_CHARS - 1].rstrip() + "…"
+
+
+def _first_paragraph(text: str) -> str:
+    if not text:
+        return ""
+    for block in text.split("\n\n"):
+        stripped = block.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _first_line(text: str) -> str:
+    if not text:
+        return ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
