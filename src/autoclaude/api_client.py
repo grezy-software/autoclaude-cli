@@ -236,7 +236,7 @@ class ApiClient:
                 "status": status,
                 "outcome": outcome,
                 "error_log": error_log,
-                "claude_cost_usd": cost_usd,
+                "claude_cost_usd": float(cost_usd),
                 "token_cost_estimate": int(token_cost_estimate),
             },
         )
@@ -272,7 +272,7 @@ class ApiClient:
             json={
                 "summary": summary,
                 "error_log": error_log,
-                "claude_cost_usd": cost_usd,
+                "claude_cost_usd": float(cost_usd),
                 "token_cost_estimate": int(token_cost_estimate),
             },
         )
@@ -292,7 +292,7 @@ class ApiClient:
         if token_cost_estimate is not None:
             payload["token_cost_estimate"] = int(token_cost_estimate)
         if cost_usd is not None:
-            payload["claude_cost_usd"] = round(float(cost_usd), 6)
+            payload["claude_cost_usd"] = float(cost_usd)
         return self._attempt(
             "PATCH",
             f"/api/ac/runner/{tick_id}/tick_heartbeat/",
