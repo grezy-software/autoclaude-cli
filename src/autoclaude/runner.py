@@ -15,6 +15,8 @@ from autoclaude import repo_config as repo_config_mod
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.claude_proc import run_step
 from autoclaude.debug_files import fulfill_pending as fulfill_debug_requests
+from autoclaude.gh import GhError
+from autoclaude.gh import ensure_installed as ensure_gh_installed
 from autoclaude.logger import get_logger
 from autoclaude.storage import RepoStorage
 from autoclaude.tick_logger import TickLogger
@@ -261,6 +263,12 @@ def run_tick(client: ApiClient, *, source_repo: Path) -> int:
     and runs each step inside a dedicated git worktree on its own branch.
     Returns an exit code: 0 success, nonzero on error.
     """
+    try:
+        ensure_gh_installed()
+    except GhError as exc:
+        _log.error("[red]%s[/red]", exc, extra={"source": "cli"})
+        return EXIT_FAILED
+
     try:
         workspace = Workspace.for_source(source_repo)
         workspace.sync(source_repo)

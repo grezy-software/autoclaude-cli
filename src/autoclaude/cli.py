@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import shutil
-import subprocess
 import webbrowser
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +13,8 @@ import typer
 from autoclaude import __version__, repo_config
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.config import DEFAULT_URL, Config, Profile
+from autoclaude.gh import is_authenticated as gh_is_authenticated
+from autoclaude.gh import is_installed as gh_is_installed
 from autoclaude.log_uploader import replay_pending
 from autoclaude.logger import get_logger
 from autoclaude.runner import (
@@ -103,8 +104,17 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
         path = shutil.which(binary)
         _log.info("%s: %s", binary, path or "[red]not found[/red]", extra={"source": "cli"})
 
-    gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False)
-    _log.info("gh auth: %s", "ok" if gh_status.returncode == 0 else "[red]NOT LOGGED IN[/red]", extra={"source": "cli"})
+    if not gh_is_installed():
+        _log.error(
+            "[red]gh CLI missing[/red]: install it from https://cli.github.com so git operations can authenticate.",
+            extra={"source": "cli"},
+        )
+    else:
+        _log.info(
+            "gh auth: %s",
+            "ok" if gh_is_authenticated() else "[red]NOT LOGGED IN[/red]",
+            extra={"source": "cli"},
+        )
 
     try:
         with ApiClient(prof, cli_version=__version__) as client:

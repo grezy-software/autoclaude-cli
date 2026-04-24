@@ -9,6 +9,12 @@ user's tree untouched and prevents branch collisions.
 
 ``$AUTOCLAUDE_HOME`` defaults to ``~/.autoclaude``. Override via env var
 for tests or a non-default install.
+
+All git work is gated on the GitHub CLI (``gh``) being installed. The
+actual ``git`` subprocesses are still what do the local mechanics
+(``clone``, ``fetch``, ``worktree``), but pushing/fetching over the
+network against ``github.com`` relies on ``gh``'s credential helper
+being wired in, so we refuse to start without ``gh`` on ``PATH``.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from autoclaude.gh import ensure_installed as ensure_gh_installed
 from autoclaude.logger import get_logger
 
 _log = get_logger("workspace")
@@ -107,6 +114,7 @@ class Workspace:
         fetch every ref from it. Returns the clone path. The source is
         treated as the authoritative remote named ``origin``.
         """
+        _require_gh()
         source_resolved = source.resolve()
         if not (source_resolved / ".git").exists():
             msg = f"source is not a git repo: {source_resolved}"
@@ -164,11 +172,21 @@ class Workspace:
         _git(["worktree", "prune"], cwd=self.clone_path, check=False)
 
 
+def _require_gh() -> None:
+    """Translate a missing ``gh`` CLI into a ``WorkspaceError`` so callers see one exception type."""
+    try:
+        ensure_gh_installed()
+    except RuntimeError as exc:
+        raise WorkspaceError(str(exc)) from exc
+
+
 def _git(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run ``git`` and raise ``WorkspaceError`` on non-zero exit.
 
     Centralised so every git call gets the same text/capture treatment and
-    the same error-to-exception mapping.
+    the same error-to-exception mapping. Network-facing operations rely on
+    ``gh``'s git credential helper, so callers must have already invoked
+    ``_require_gh`` (``sync`` does this for the whole workspace at start).
     """
     result = subprocess.run(
         ["git", *args],
