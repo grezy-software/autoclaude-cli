@@ -50,8 +50,28 @@ def _normalize_url(raw: str) -> str:
     return value
 
 
+def _print_version(value: bool) -> None:  # noqa: FBT001 (Typer callback signature)
+    if not value:
+        return
+    typer.echo(__version__)
+    raise typer.Exit
+
+
 @app.callback()
-def _main(ctx: typer.Context, profile: ProfileOption = None) -> None:
+def _main(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
+    _version: Annotated[  # noqa: FBT002 (Typer option, value is driven by the CLI flag)
+        bool,
+        typer.Option(
+            "--version",
+            "-v",
+            help="Print the installed autoclaude-cli version and exit.",
+            callback=_print_version,
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
     """Shared options. `--profile` works here or on any subcommand."""
     ctx.obj = {"profile": profile}
 
