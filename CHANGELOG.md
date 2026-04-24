@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.0...v1.8.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* **workspace:** normalise github_repo to a canonical clone URL ([34473dd](https://github.com/grezy-software/autoclaude-cli/commit/34473ddfe6c37693cff69344224cb3f23a5d9987))
+
 # [1.8.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.7.0...v1.8.0) (2026-04-24)
 
 
