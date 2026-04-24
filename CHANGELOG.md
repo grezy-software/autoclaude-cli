@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.5.1...v1.6.0) (2026-04-24)
+
+
+### Features
+
+* **tick-steps:** setup/cleanup lifecycle rows + readable step summary ([b4b3f51](https://github.com/grezy-software/autoclaude-cli/commit/b4b3f51b13aaf9b56db773b6fdae86152cd9e829))
+
 ## [1.5.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.5.0...v1.5.1) (2026-04-24)
 
 
