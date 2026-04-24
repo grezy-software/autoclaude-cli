@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.4.0...v1.5.0) (2026-04-24)
+
+
+### Features
+
+* **cli:** add --version/-v and read __version__ from package metadata ([bfc17bb](https://github.com/grezy-software/autoclaude-cli/commit/bfc17bb7aec96a3c14850894b55d4113935972b2))
+
 # [1.4.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.3.0...v1.4.0) (2026-04-24)
 
 
