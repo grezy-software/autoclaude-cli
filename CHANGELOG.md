@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.2.0...v1.3.0) (2026-04-24)
+
+
+### Features
+
+* isolate ticks in dedicated clones + worktrees and add self-healing docs protocol ([c108bee](https://github.com/grezy-software/autoclaude-cli/commit/c108beea3e06c53ea613636f44a79489ed273532))
+
 # [1.2.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.1.2...v1.2.0) (2026-04-22)
 
 
