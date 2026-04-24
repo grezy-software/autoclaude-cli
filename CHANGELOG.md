@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.6.0...v1.7.0) (2026-04-24)
+
+
+### Features
+
+* **workspace:** github remote for gh + file-tree snapshot upload ([4cfb251](https://github.com/grezy-software/autoclaude-cli/commit/4cfb251346ef7179082088b98a579e23b34fcf5c))
+
 # [1.6.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.5.1...v1.6.0) (2026-04-24)
 
 
