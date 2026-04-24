@@ -1,3 +1,10 @@
+## [1.5.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.5.0...v1.5.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* **cost:** send raw cost_usd without rounding ([2cf2509](https://github.com/grezy-software/autoclaude-cli/commit/2cf2509d6b56c2d810e65554764f38a6c73fdb8c))
+
 # [1.5.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.4.0...v1.5.0) (2026-04-24)
 
 
