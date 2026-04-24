@@ -24,6 +24,7 @@ from autoclaude import repo_config as repo_config_mod
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.claude_proc import run_step
 from autoclaude.debug_files import fulfill_pending as fulfill_debug_requests
+from autoclaude.file_tree import build_snapshot as build_file_tree_snapshot
 from autoclaude.gh import GhError
 from autoclaude.gh import ensure_installed as ensure_gh_installed
 from autoclaude.logger import get_logger
@@ -481,7 +482,7 @@ def run_tick(client: ApiClient, *, source_repo: Path) -> int:
         tick_lock.release()
 
 
-def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
+def _run_tick_locked(  # noqa: PLR0911, PLR0912, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
     client: ApiClient,
     *,
     workspace: Workspace,
@@ -493,6 +494,16 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
     except ApiError as exc:
         _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
+
+    # Wire a `github` remote so the issuer agent's `gh issue list` resolves the
+    # right repo; origin stays pinned to the user's local source for fetches.
+    project = ctx.get("project") or {}
+    github_repo = project.get("github_repo") or ""
+    if github_repo:
+        try:
+            workspace.configure_github_remote(github_repo)
+        except WorkspaceError as exc:
+            _log.warning("github remote config failed: %s", exc, extra={"source": "cli"})
 
     plan = ctx.get("plan")
     if plan is None or not plan.get("steps"):
@@ -603,6 +614,16 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
             )
 
             def _do_finalize() -> str:
+                # Upload the file-tree snapshot before closing so the dashboard
+                # always has a layout for the terminal tick. Failures here are
+                # best-effort: a missing tree is a display defect, not a reason
+                # to flip the tick's outcome.
+                snapshot = build_file_tree_snapshot(storage)
+                if snapshot is not None:
+                    try:
+                        client.upload_tick_file_tree(state.tick_id, snapshot)
+                    except ApiError as exc:
+                        _log.warning("file tree upload failed: %s", exc, extra={"source": "cli"})
                 client.close_tick(
                     state.tick_id,
                     status=state.status,

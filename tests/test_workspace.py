@@ -124,6 +124,49 @@ def test_remove_worktree_keeps_branch(tmp_path) -> None:
     assert worktree.branch in branches.stdout
 
 
+def test_configure_github_remote_is_idempotent(tmp_path) -> None:
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_source(source, home=tmp_path / "home")
+    workspace.sync(source)
+
+    workspace.configure_github_remote("soaria-app/soaria")
+    url = subprocess.run(
+        ["git", "remote", "get-url", "github"],
+        cwd=str(workspace.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert url.stdout.strip() == "https://github.com/soaria-app/soaria.git"
+
+    # Re-running must not fail; it just updates in place.
+    workspace.configure_github_remote("soaria-app/soaria")
+    workspace.configure_github_remote("another-org/another-repo")
+    url = subprocess.run(
+        ["git", "remote", "get-url", "github"],
+        cwd=str(workspace.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert url.stdout.strip() == "https://github.com/another-org/another-repo.git"
+
+
+def test_configure_github_remote_noop_on_empty(tmp_path) -> None:
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_source(source, home=tmp_path / "home")
+    workspace.sync(source)
+    workspace.configure_github_remote("")
+    remotes = subprocess.run(
+        ["git", "remote"],
+        cwd=str(workspace.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "github" not in remotes.stdout.split()
+
+
 def test_create_worktree_replaces_stale_directory(tmp_path) -> None:
     source = _make_source_repo(tmp_path / "src")
     workspace = Workspace.for_source(source, home=tmp_path / "home")

@@ -36,6 +36,7 @@ AUTOCLAUDE_HOME_ENV = "AUTOCLAUDE_HOME"
 DEFAULT_HOME_DIRNAME = ".autoclaude"
 REPOS_DIRNAME = "repos"
 WORKTREES_DIRNAME = "worktrees"
+_GITHUB_REMOTE_NAME = "github"
 
 _SLUG_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _SLUG_MAX_LENGTH = 48
@@ -128,6 +129,32 @@ class Workspace:
         _git(["remote", "set-url", "origin", str(source_resolved)], cwd=self.clone_path)
         _git(["fetch", "--prune", "origin"], cwd=self.clone_path)
         return self.clone_path
+
+    def configure_github_remote(self, github_repo: str) -> None:
+        """Attach a ``github`` remote pointing at ``github.com/<github_repo>.git``.
+
+        ``origin`` stays pinned to the user's local source checkout so
+        ``sync`` keeps working against the user's working copy. ``gh`` prefers
+        any remote whose URL resolves to a GitHub host (in name priority
+        ``upstream`` > ``github`` > ``origin``), so this gives ``gh issue
+        list`` / ``gh pr create`` a real GitHub context without disturbing
+        the local-path fetch flow.
+
+        Idempotent: creates the remote on first call, ``set-url`` on
+        subsequent calls. No-op on empty ``github_repo``.
+        """
+        if not github_repo:
+            return
+        url = f"https://github.com/{github_repo}.git"
+        existing = _git(["remote", "get-url", _GITHUB_REMOTE_NAME], cwd=self.clone_path, check=False)
+        if existing.returncode == 0:
+            if existing.stdout.strip() == url:
+                return
+            _git(["remote", "set-url", _GITHUB_REMOTE_NAME, url], cwd=self.clone_path)
+            _log.info("updated github remote -> %s", url, extra={"source": "workspace"})
+            return
+        _git(["remote", "add", _GITHUB_REMOTE_NAME, url], cwd=self.clone_path)
+        _log.info("added github remote %s -> %s", _GITHUB_REMOTE_NAME, url, extra={"source": "workspace"})
 
     # --- worktrees ------------------------------------------------------------
 

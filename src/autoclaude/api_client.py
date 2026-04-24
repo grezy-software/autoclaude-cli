@@ -365,6 +365,19 @@ class ApiClient:
             },
         )
 
+    def upload_tick_file_tree(self: Self, tick_id: int, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Upload a capped ``.autoclaude/`` layout snapshot at tick close.
+
+        The dashboard renders the tree in the DebugFileRequest UI so operators
+        can browse what files are available instead of guessing paths.
+        """
+        return self._attempt(
+            "PATCH",
+            f"/api/ac/runner/{tick_id}/tick_file_tree/",
+            docs_path="/api/ac/runner/tick_file_tree/",
+            json=snapshot,
+        )
+
     def get_tool_manifest(self: Self, slug: str) -> dict[str, Any]:
         """Fetch the full local-install manifest for ``slug``.
 

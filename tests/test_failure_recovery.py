@@ -196,6 +196,9 @@ class _FakeApiClient:
     def post_tick_logs(self, tick_id: int, entries: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: ARG002
         return {"accepted": len(entries), "submitted": len(entries)}
 
+    def upload_tick_file_tree(self, tick_id: int, snapshot: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG002
+        return {}
+
 
 @pytest.fixture
 def fake_run_step(monkeypatch):
