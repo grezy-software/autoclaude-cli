@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.1...v1.8.2) (2026-04-24)
+
+
+### Bug Fixes
+
+* **heartbeat:** ping backend on a timer so long steps don't go stale ([15e709c](https://github.com/grezy-software/autoclaude-cli/commit/15e709c366b9308952b5c55c872ad2992aaf826c))
+
 ## [1.8.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.0...v1.8.1) (2026-04-24)
 
 
