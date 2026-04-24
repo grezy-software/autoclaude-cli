@@ -47,10 +47,7 @@ autoclaude login --url localhost:3001        # point at a local frontend
 # 2. Verify everything is wired up.
 autoclaude diag
 
-# 3. Install the Claude Code plugins your team's jobs require.
-autoclaude skills-install
-
-# 4. Fire a tick. The server picks the next Job and plan.
+# 3. Fire a tick. The server picks the next Job and plan.
 autoclaude tick
 ```
 
@@ -69,12 +66,14 @@ AUTOCLAUDE_PROFILE=staging autoclaude tick
 
 ## How it works
 
-1. CLI fetches the current plan from `GET /api/ac/runner/context/`.
-2. For each step in the plan:
-   - Ensures required Claude Code plugins are installed (`claude plugin install ...`).
-   - Spawns `claude -p "<prompt>"` in the repo checkout.
-   - Forwards tool callbacks to the server via `/api/ac/tool/<slug>/<action>/`.
-3. Closes the tick with the outcome and cost report.
+1. CLI mirrors the source repo into `$AUTOCLAUDE_HOME/repos/<slug>/` (defaults to `~/.autoclaude/repos/<slug>/`); subsequent ticks just fetch.
+2. CLI fetches the current plan from `GET /api/ac/runner/context/`.
+3. After opening the tick, CLI creates a dedicated git worktree at `$AUTOCLAUDE_HOME/worktrees/<slug>/<tick_id>/` on branch `autoclaude/<slug>/tick-<tick_id>`.
+4. For each step in the plan:
+   - Spawns `claude -p "<prompt>"` inside the worktree. The user's checkout is never modified.
+5. Closes the tick with the outcome and cost report, removes the worktree, and keeps the branch so the changes remain inspectable.
+
+Override the workspace root with the `AUTOCLAUDE_HOME` environment variable.
 
 ## License
 

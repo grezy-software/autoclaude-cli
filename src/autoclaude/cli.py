@@ -10,18 +10,28 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from rich.console import Console
 
-from autoclaude import __version__
+from autoclaude import __version__, repo_config
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.config import DEFAULT_URL, Config, Profile
-from autoclaude.plugins import ensure_installed, list_installed
-from autoclaude.runner import run_tick as runner_run_tick
+from autoclaude.log_uploader import replay_pending
+from autoclaude.logger import get_logger
+from autoclaude.runner import (
+    EXIT_ABANDONED,
+    EXIT_TOKEN_EXHAUSTED,
+)
+from autoclaude.runner import (
+    run_tick as runner_run_tick,
+)
+from autoclaude.storage import RepoStorage
+from autoclaude.workspace import workspace_home
+
+CLAUDE_BILLING_URL = "https://console.anthropic.com/settings/plans"
 
 API_KEYS_PATH = "/logged-in/settings/api-keys"
 
 app = typer.Typer(add_completion=False, help="Local runner for AutoClaude.")
-console = Console()
+_log = get_logger("cli")
 
 ProfileOption = Annotated[
     str | None,
@@ -66,7 +76,7 @@ def login(
         prof.url = _normalize_url(url)
 
     settings_url = f"{prof.url}{API_KEYS_PATH}"
-    console.print(f"API-key page: [bold]{settings_url}[/bold]")
+    _log.info("API-key page: [bold]%s[/bold]", settings_url, extra={"source": "cli"})
     if typer.confirm("Open it in your browser now?", default=True):
         with contextlib.suppress(Exception):
             webbrowser.open(settings_url)
@@ -75,79 +85,101 @@ def login(
     cfg.profiles[prof.name] = prof
     cfg.active = prof.name
     cfg.save()
-    console.print(f"[green]saved profile {prof.name!r}[/green] -> {prof.url}")
+    _log.info("[green]saved profile %r[/green] -> %s", prof.name, prof.url, extra={"source": "cli"})
 
 
 @app.command()
 def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Verify config, claude CLI, gh auth, repo checkout."""
     _cfg, prof = _load(ctx, profile)
-    console.print(f"profile: [bold]{prof.name}[/bold]")
-    console.print(f"url: {prof.url or '[red]missing[/red]'}")
-    console.print(f"api_key set: {'yes' if prof.api_key else '[red]no[/red]'}")
-    console.print(f"repo_checkout: {prof.repo_checkout or '[yellow]unset[/yellow]'}")
+    _log.info("profile: [bold]%s[/bold]", prof.name, extra={"source": "cli"})
+    _log.info("url: %s", prof.url or "[red]missing[/red]", extra={"source": "cli"})
+    _log.info("api_key set: %s", "yes" if prof.api_key else "[red]no[/red]", extra={"source": "cli"})
+    _log.info("repo_checkout: %s", prof.repo_checkout or "[yellow]unset[/yellow]", extra={"source": "cli"})
+    _log.info("autoclaude_root: %s", prof.resolve_autoclaude_root(), extra={"source": "cli"})
+    _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
 
     for binary in ("claude", "gh", "git"):
         path = shutil.which(binary)
-        console.print(f"{binary}: {path or '[red]not found[/red]'}")
+        _log.info("%s: %s", binary, path or "[red]not found[/red]", extra={"source": "cli"})
 
     gh_status = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, check=False)
-    console.print(f"gh auth: {'ok' if gh_status.returncode == 0 else '[red]NOT LOGGED IN[/red]'}")
+    _log.info("gh auth: %s", "ok" if gh_status.returncode == 0 else "[red]NOT LOGGED IN[/red]", extra={"source": "cli"})
 
     try:
-        with ApiClient(prof) as client:
+        with ApiClient(prof, cli_version=__version__) as client:
             api_ctx = client.context()
+            _report_protocol_state(client)
     except ApiError as exc:
-        console.print(f"[red]context fetch failed[/red]: {exc}")
+        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
+        if exc.docs:
+            _log.info(
+                "[dim]attached docs (stage=%s, source=%s):[/dim]\n%s",
+                exc.stage,
+                exc.docs_source,
+                exc.docs,
+                extra={"source": "cli"},
+            )
         return
     owner = api_ctx.get("owner") or {}
-    console.print(f"resolved owner: {owner.get('email') or owner.get('username') or '?'}")
+    _log.info(
+        "resolved owner: %s",
+        owner.get("email") or owner.get("username") or "?",
+        extra={"source": "cli"},
+    )
 
-    plugins = list_installed()
-    console.print(f"claude plugins: {len(plugins)} installed")
 
-
-@app.command("skills-install", hidden=False)
-def skills_install(ctx: typer.Context, profile: ProfileOption = None) -> None:
-    """Install all Claude Code plugins the current plan requires."""
-    _cfg, prof = _load(ctx, profile)
-    try:
-        with ApiClient(prof) as client:
-            refs = client.plugin_refs()
-    except ApiError as exc:
-        console.print(f"[red]plugin_refs fetch failed[/red]: {exc}")
-        raise typer.Exit(code=1) from exc
-    if not refs:
-        console.print("[dim]no plugins required[/dim]")
-        return
-    try:
-        installed = ensure_installed(refs)
-    except RuntimeError as exc:
-        console.print(f"[red]plugin install failed[/red]: {exc}")
-        raise typer.Exit(code=1) from exc
-    if installed:
-        console.print(f"[green]installed:[/green] {', '.join(installed)}")
-    else:
-        console.print("[dim]all required plugins already installed[/dim]")
+def _report_protocol_state(client: ApiClient) -> None:
+    storage = RepoStorage.from_autoclaude_root(client.autoclaude_root)
+    docs_dir = storage.api_docs_dir
+    docs_count = sum(1 for _ in docs_dir.rglob("*.md")) if docs_dir.exists() else 0
+    reports_dir = storage.reports_dir
+    last_report = None
+    if reports_dir.exists():
+        candidates = sorted(reports_dir.glob("*.json"))
+        if candidates:
+            last_report = candidates[-1].name
+    _log.info("cached docs: %d", docs_count, extra={"source": "cli"})
+    _log.info("last report: %s", last_report or "[dim]none[/dim]", extra={"source": "cli"})
+    last_tick = storage.read_last_tick()
+    if last_tick:
+        _log.info(
+            "last tick: #%s status=%s cost=$%.4f",
+            last_tick.get("tick_id"),
+            last_tick.get("status"),
+            float(last_tick.get("cost_usd") or 0.0),
+            extra={"source": "cli"},
+        )
+    stages = client.tracker_snapshot()
+    if stages:
+        _log.info("protocol stages:", extra={"source": "cli"})
+        for key, stage in sorted(stages.items()):
+            _log.info("  %s -> %s", key, stage, extra={"source": "cli"})
 
 
 @app.command()
 def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Print the active profile and the last tick summary."""
     _cfg, prof = _load(ctx, profile)
-    console.print(f"profile: {prof.name}")
-    console.print(f"url: {prof.url}")
+    _log.info("profile: %s", prof.name, extra={"source": "cli"})
+    _log.info("url: %s", prof.url, extra={"source": "cli"})
     try:
-        with ApiClient(prof) as client:
+        with ApiClient(prof, cli_version=__version__) as client:
             api_ctx = client.context()
     except ApiError as exc:
-        console.print(f"[red]context fetch failed[/red]: {exc}")
+        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
     plan = api_ctx.get("plan")
     if plan:
-        console.print(f"next job: {plan.get('job_slug')} ({len(plan.get('steps') or [])} steps, mode={plan.get('mode')})")
+        _log.info(
+            "next job: #%s (%s steps, mode=%s)",
+            plan.get("job_id"),
+            len(plan.get("steps") or []),
+            plan.get("mode"),
+            extra={"source": "cli"},
+        )
     else:
-        console.print("[yellow]no active plan[/yellow]")
+        _log.warning("[yellow]no active plan[/yellow]", extra={"source": "cli"})
 
 
 @app.command()
@@ -156,33 +188,74 @@ def tick(
     profile: ProfileOption = None,
     repo: Annotated[
         Path | None,
-        typer.Option("--repo", help="Repo checkout to run agents in. Defaults to CWD or the profile's saved checkout."),
+        typer.Option("--repo", help="Source repo to mirror into the autoclaude workspace. Defaults to CWD or the profile's saved checkout."),
     ] = None,
 ) -> None:
-    """Run one tick."""
+    """Run one tick.
+
+    The source repo is cloned into ``$AUTOCLAUDE_HOME/repos/<slug>/`` and
+    each tick runs inside a dedicated git worktree on its own branch. The
+    user's checkout is never modified.
+    """
     cfg, prof = _load(ctx, profile)
-    checkout = repo or (Path(prof.repo_checkout) if prof.repo_checkout else Path.cwd())
-    if not (checkout / ".git").exists():
-        console.print(f"[red]not a git repo[/red]: {checkout}")
+    source = repo or (Path(prof.repo_checkout) if prof.repo_checkout else Path.cwd())
+    if not (source / ".git").exists():
+        _log.error("[red]not a git repo[/red]: %s", source, extra={"source": "cli"})
         raise typer.Exit(code=2)
     if repo is not None:
         prof.repo_checkout = str(repo)
         cfg.profiles[prof.name] = prof
         cfg.save()
     try:
-        with ApiClient(prof) as client:
-            exit_code = runner_run_tick(client, repo_checkout=checkout)
+        with ApiClient(prof, cli_version=__version__) as client:
+            with contextlib.suppress(Exception):
+                replay_pending(client)
+            exit_code = runner_run_tick(client, source_repo=source)
     except ApiError as exc:
-        console.print(f"[red]api error[/red]: {exc}")
+        _log.error("[red]api error[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
+    if exit_code == EXIT_TOKEN_EXHAUSTED:
+        _log.error(
+            "[red]Claude subscription out of tokens.[/red] Top up at %s then re-run `autoclaude tick`. "
+            "This tick was not counted against your hourly limit.",
+            CLAUDE_BILLING_URL,
+            extra={"source": "cli"},
+        )
+    elif exit_code == EXIT_ABANDONED:
+        _log.warning(
+            "[yellow]tick abandoned via shutdown signal; server will accept the next tick as a resume.[/yellow]",
+            extra={"source": "cli"},
+        )
     if exit_code != 0:
         raise typer.Exit(code=exit_code)
 
 
 @app.command()
+def init(
+    repo: Annotated[
+        Path | None,
+        typer.Option("--repo", help="Repo to scaffold. Defaults to the current directory."),
+    ] = None,
+) -> None:
+    """Scaffold ``.autoclaude/`` in the target repo (idempotent).
+
+    Creates the folder skeleton, writes the managed ``.gitignore``, stamps
+    ``META.json`` with the current schema version, and drops a default
+    ``config.toml`` if none exists. Safe to re-run -- existing config files
+    are never overwritten.
+    """
+    root = (repo or Path.cwd()).resolve()
+    storage = RepoStorage.from_repo(root)
+    storage.ensure()
+    config_path = repo_config.scaffold_default(root)
+    _log.info("initialised [bold]%s[/bold]", storage.root, extra={"source": "cli"})
+    _log.info("config: %s", config_path, extra={"source": "cli"})
+
+
+@app.command()
 def version() -> None:
     """Print the package version."""
-    console.print(__version__)
+    _log.info("%s", __version__, extra={"source": "cli"})
 
 
 if __name__ == "__main__":
