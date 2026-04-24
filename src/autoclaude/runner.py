@@ -27,6 +27,7 @@ from autoclaude.debug_files import fulfill_pending as fulfill_debug_requests
 from autoclaude.file_tree import build_snapshot as build_file_tree_snapshot
 from autoclaude.gh import GhError
 from autoclaude.gh import ensure_installed as ensure_gh_installed
+from autoclaude.heartbeat import HeartbeatPinger
 from autoclaude.logger import get_logger
 from autoclaude.storage import RepoStorage
 from autoclaude.tick_logger import TickLogger
@@ -600,7 +601,14 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0912, PLR0915, C901 (exit-code dispat
 
     worktree_cleaned = False
     try:
-        with TickLogger(client, state.tick_id, repo_checkout=worktree.path) as tick_logger:
+        with (
+            TickLogger(client, state.tick_id, repo_checkout=worktree.path) as tick_logger,
+            HeartbeatPinger(
+                client,
+                state.tick_id,
+                get_totals=lambda: (state.total_tokens, state.total_cost),
+            ),
+        ):
             _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost, storage=storage)
             last_agent_ordinal = _execute_steps(
                 client,
