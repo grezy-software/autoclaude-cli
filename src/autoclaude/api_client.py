@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import urlparse
@@ -245,15 +246,37 @@ class ApiClient:
         self: Self,
         *,
         tick_id: int,
-        agent_slug: str,
+        agent_slug: str = "",
         ordinal: int,
         name: str,
+        kind: str = "agent",
+        action: str = "",
+        started_at: datetime | None = None,
     ) -> dict[str, Any]:
+        """Open a TickStep.
+
+        ``kind`` is ``"setup"``/``"agent"``/``"cleanup"``. ``action`` is the prompt
+        (for agents) or a short command description (for setup/cleanup) surfaced
+        in the dashboard. ``started_at`` is honoured when supplied so the CLI can
+        back-date rows for work that ran before the Tick existed.
+        """
+        payload: dict[str, Any] = {
+            "tick_id": tick_id,
+            "kind": kind,
+            "ordinal": ordinal,
+            "name": name,
+        }
+        if agent_slug:
+            payload["agent_slug"] = agent_slug
+        if action:
+            payload["action"] = action
+        if started_at is not None:
+            payload["started_at"] = started_at.isoformat()
         return self._attempt(
             "POST",
             "/api/ac/runner/tick_step/",
             docs_path="/api/ac/runner/tick_step/",
-            json={"tick_id": tick_id, "agent_slug": agent_slug, "ordinal": ordinal, "name": name},
+            json=payload,
         )
 
     def close_step(
@@ -264,17 +287,21 @@ class ApiClient:
         error_log: str = "",
         cost_usd: float = 0.0,
         token_cost_estimate: int = 0,
+        ended_at: datetime | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "summary": summary,
+            "error_log": error_log,
+            "claude_cost_usd": float(cost_usd),
+            "token_cost_estimate": int(token_cost_estimate),
+        }
+        if ended_at is not None:
+            payload["ended_at"] = ended_at.isoformat()
         return self._attempt(
             "PATCH",
             f"/api/ac/runner/{step_id}/tick_step_close/",
             docs_path="/api/ac/runner/tick_step_close/",
-            json={
-                "summary": summary,
-                "error_log": error_log,
-                "claude_cost_usd": float(cost_usd),
-                "token_cost_estimate": int(token_cost_estimate),
-            },
+            json=payload,
         )
 
     def tick_heartbeat(

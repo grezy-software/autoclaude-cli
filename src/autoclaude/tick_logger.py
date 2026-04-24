@@ -81,6 +81,17 @@ class TickLogger:
             if self._uploader is not None:
                 self._uploader.close(timeout=_CRASH_FLUSH_TIMEOUT)
 
+    def flush(self, timeout: float = _CRASH_FLUSH_TIMEOUT) -> bool:
+        """Block until the queued log entries are sent.
+
+        Returns True when the worker reported idle within ``timeout``.
+        Exposed so the runner can record a dedicated ``log_flush`` TickStep
+        that wraps this call.
+        """
+        if self._uploader is None:
+            return True
+        return self._uploader.flush(timeout=timeout)
+
     # -- helpers ---------------------------------------------------------
 
     def _install_hooks(self) -> None:

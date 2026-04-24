@@ -60,6 +60,9 @@ class ClaudeResult:
     token_cost_estimate: int = 0
     duration_ms: int = 0
     token_exhausted: bool = False
+    # Human-readable text pulled from the `result` field of `claude -p --output-format json`.
+    # Falls back to empty string when the JSON couldn't be parsed (error case).
+    summary: str = ""
 
 
 def _tee_stream(stream: IO[str], source: str, *, buffer: list[str], step_id: int | None) -> None:
@@ -139,6 +142,11 @@ def run_step(
     stderr_text = "".join(stderr_buffer)
     session_id, cost, tokens, parsed = _parse_result_metadata(stdout_text)
     token_exhausted = detect_token_exhaustion(stdout_text, stderr_text, parsed)
+    summary = ""
+    if isinstance(parsed, dict):
+        raw_summary = parsed.get("result")
+        if isinstance(raw_summary, str):
+            summary = raw_summary.strip()
     _log.info(
         "claude subprocess exited rc=%s in %sms cost=%.6f tokens=%s",
         returncode,
@@ -166,6 +174,7 @@ def run_step(
         token_cost_estimate=tokens,
         duration_ms=duration_ms,
         token_exhausted=token_exhausted,
+        summary=summary,
     )
 
 

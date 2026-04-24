@@ -124,8 +124,28 @@ class _FakeApiClient:
         self.heartbeat_payloads.append({"token_cost_estimate": token_cost_estimate, "cost_usd": cost_usd})
         return {"ok": True}
 
-    def open_step(self, *, tick_id: int, agent_slug: str, ordinal: int, name: str) -> dict[str, Any]:
-        self.open_step_calls.append({"tick_id": tick_id, "agent_slug": agent_slug, "ordinal": ordinal, "name": name})
+    def open_step(
+        self,
+        *,
+        tick_id: int,
+        agent_slug: str = "",
+        ordinal: int,
+        name: str,
+        kind: str = "agent",
+        action: str = "",
+        started_at: Any = None,
+    ) -> dict[str, Any]:
+        self.open_step_calls.append(
+            {
+                "tick_id": tick_id,
+                "agent_slug": agent_slug,
+                "ordinal": ordinal,
+                "name": name,
+                "kind": kind,
+                "action": action,
+                "started_at": started_at,
+            },
+        )
         self._step_counter += 1
         return {"id": self._step_counter}
 
@@ -137,6 +157,7 @@ class _FakeApiClient:
         error_log: str = "",
         cost_usd: float = 0.0,
         token_cost_estimate: int = 0,
+        ended_at: Any = None,
     ) -> dict[str, Any]:
         self.close_step_calls.append(
             {
@@ -145,6 +166,7 @@ class _FakeApiClient:
                 "error_log": error_log,
                 "cost_usd": cost_usd,
                 "token_cost_estimate": token_cost_estimate,
+                "ended_at": ended_at,
             },
         )
         return {"id": step_id}
@@ -314,7 +336,7 @@ def test_execute_steps_abandons_when_shutdown_flag_is_set(tmp_path, monkeypatch)
     storage = RepoStorage.from_repo(tmp_path)
     storage.ensure()
 
-    _execute_steps(client, state, _basic_steps(), tmp_path, shutdown, storage)
+    _execute_steps(client, state, _basic_steps(), tmp_path, shutdown, storage, start_ordinal=0)
 
     assert state.status == "abandoned"
     assert "shutdown" in state.error
