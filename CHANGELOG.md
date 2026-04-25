@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.2...v1.9.0) (2026-04-25)
+
+
+### Features
+
+* **runner:** auto-create GitHub repo when project.github_repo is empty ([0fe6e5a](https://github.com/grezy-software/autoclaude-cli/commit/0fe6e5a6041c1a1039cf02d32a2bbedbfdd50852))
+
 ## [1.8.2](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.1...v1.8.2) (2026-04-24)
 
 
