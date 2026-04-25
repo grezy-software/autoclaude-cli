@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.9.1...v1.10.0) (2026-04-25)
+
+
+### Features
+
+* **runner:** push the tick branch to origin in cleanup ([f57e1e7](https://github.com/grezy-software/autoclaude-cli/commit/f57e1e7de7dabd8e734b8dd68d2777059ba32ee3))
+
 ## [1.9.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.9.0...v1.9.1) (2026-04-25)
 
 
