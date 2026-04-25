@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.10.0...v1.11.0) (2026-04-25)
+
+
+### Features
+
+* **daemon:** background heartbeat process with launchd/systemd installer ([beb7b1e](https://github.com/grezy-software/autoclaude-cli/commit/beb7b1ec5a79ec5717855ea547adcb7c2985d024))
+
 # [1.10.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.9.1...v1.10.0) (2026-04-25)
 
 
