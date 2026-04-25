@@ -11,6 +11,7 @@ back-dated rows right after ``tick_open`` succeeds.
 
 from __future__ import annotations
 
+import re
 import signal
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from filelock import Timeout
 
 from autoclaude import __version__
+from autoclaude import gh as gh_helpers
 from autoclaude import repo_config as repo_config_mod
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.claude_proc import run_step
@@ -411,6 +413,79 @@ def _persist_tick_outcome(
     storage.append_history({"event": "tick_closed", **summary})
 
 
+_GITHUB_NAME_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]+")
+_GITHUB_NAME_MAX_LEN = 100
+_AUTOCREATE_MAX_ATTEMPTS = 100
+_AUTOCREATE_FALLBACK_NAME = "autoclaude-project"
+
+
+def _slugify_for_github(name: str) -> str:
+    """Coerce a project name into a GitHub-legal repo name.
+
+    GitHub allows alphanumerics, dots, underscores, and hyphens. We replace
+    every other character (and runs of whitespace) with a hyphen, collapse
+    repeats, trim leading/trailing hyphens, and lowercase. Empty results
+    fall back to a constant rather than letting `gh repo create` reject an
+    empty name with a confusing message.
+    """
+    base = _GITHUB_NAME_DISALLOWED.sub("-", name.strip())
+    base = re.sub(r"-+", "-", base).strip("-").lower()
+    base = base[:_GITHUB_NAME_MAX_LEN].rstrip("-.")
+    return base or _AUTOCREATE_FALLBACK_NAME
+
+
+def _find_available_repo_name(owner: str, base: str, *, max_attempts: int = _AUTOCREATE_MAX_ATTEMPTS) -> str:
+    """Return the first ``base[-N]`` name not already taken on GitHub.
+
+    Tries ``base``, ``base-1``, ``base-2``, ..., up to ``max_attempts``.
+    Probing uses ``gh repo view`` so we hit GitHub directly rather than
+    racing on cached state. The cap exists so a misconfigured org with
+    thousands of stale repos can't push us into an infinite loop; in
+    practice a free user will collide on -0..-3 at most.
+    """
+    for index in range(max_attempts):
+        candidate = base if index == 0 else f"{base}-{index}"
+        if not gh_helpers.repo_exists(f"{owner}/{candidate}"):
+            return candidate
+    msg = f"all suffixes 0..{max_attempts - 1} are taken for base name {base!r} under {owner}"
+    raise GhError(msg)
+
+
+def _autocreate_github_repo(client: ApiClient, project: dict[str, Any]) -> str:
+    """Create the project's GitHub repo and persist it on the server.
+
+    Used when ``project.github_repo`` comes back empty from
+    ``client.context()``. Picks ``<authed-user>/<slugified-project-name>``
+    (incrementing a numeric suffix on collision), creates the repo as
+    private via ``gh``, then PATCHes the server so future ticks resolve
+    the same value without re-running this branch.
+    """
+    project_id = project.get("id")
+    project_name = project.get("name") or _AUTOCREATE_FALLBACK_NAME
+    if not isinstance(project_id, int):
+        msg = "context project has no id; cannot auto-create github repo"
+        raise GhError(msg)
+
+    owner = gh_helpers.current_user_login()
+    base = _slugify_for_github(project_name)
+    name = _find_available_repo_name(owner, base)
+    full_repo = f"{owner}/{name}"
+    _log.info(
+        "[yellow]project has no github_repo; creating[/yellow] %s (private)",
+        full_repo,
+        extra={"source": "cli"},
+    )
+    gh_helpers.repo_create(full_repo, private=True)
+    client.update_project_github_repo(project_id, full_repo)
+    _log.info(
+        "[green]github_repo set on project %s ->[/green] %s",
+        project_id,
+        full_repo,
+        extra={"source": "cli"},
+    )
+    return full_repo
+
+
 def _cleanup_worktree(workspace: Workspace, worktree: Worktree) -> None:
     """Remove the tick's worktree, tolerating any teardown error."""
     try:
@@ -448,11 +523,11 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
     project = ctx.get("project") or {}
     github_repo = project.get("github_repo") or ""
     if not github_repo:
-        _log.error(
-            "[red]project has no github_repo configured[/red]; set it in the dashboard before running ticks",
-            extra={"source": "cli"},
-        )
-        return EXIT_FAILED
+        try:
+            github_repo = _autocreate_github_repo(client, project)
+        except (GhError, ApiError) as exc:
+            _log.error("[red]github repo auto-create failed[/red]: %s", exc, extra={"source": "cli"})
+            return EXIT_FAILED
 
     factory = workspace_factory or Workspace.for_github_repo
     repo_sync_started = _utcnow()

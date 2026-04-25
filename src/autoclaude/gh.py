@@ -93,11 +93,56 @@ def gh(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subpr
     return result
 
 
+def current_user_login() -> str:
+    """Return the GitHub login of the authenticated ``gh`` user.
+
+    Used by the auto-create flow to choose the owner of a freshly-created
+    project repo. Raises ``GhError`` when ``gh`` is missing/unauthenticated
+    or the API response cannot be parsed.
+    """
+    result = gh(["api", "user", "--jq", ".login"])
+    login = result.stdout.strip()
+    if not login:
+        msg = "gh api user returned an empty login"
+        raise GhError(msg)
+    return login
+
+
+def repo_exists(repo: str) -> bool:
+    """Return True when ``gh repo view <owner/name>`` resolves the repo.
+
+    The auto-create flow polls this with incrementing suffixes to find an
+    available name. Any non-zero exit (404, network) is treated as
+    "doesn't exist for our purposes" so we err on the side of creating
+    rather than failing the tick on a transient lookup glitch.
+    """
+    result = gh(
+        ["repo", "view", repo, "--json", "name"],
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def repo_create(repo: str, *, private: bool = True) -> None:
+    """Create ``<owner>/<name>`` on GitHub via ``gh repo create``.
+
+    ``--private`` is the default; pass ``private=False`` only when the
+    project's policy explicitly opts into a public repo. The repo is left
+    empty -- the runner pushes commits later through the normal worktree
+    flow once it has work to ship.
+    """
+    visibility = "--private" if private else "--public"
+    gh(["repo", "create", repo, visibility])
+
+
 __all__ = [
     "GhError",
+    "current_user_login",
     "ensure_authenticated",
     "ensure_installed",
     "gh",
     "is_authenticated",
     "is_installed",
+    "repo_create",
+    "repo_exists",
 ]

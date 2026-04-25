@@ -398,6 +398,21 @@ class ApiClient:
             json={"agent_config_id": agent_config_id, "content": content},
         )
 
+    def update_project_github_repo(self: Self, project_id: int, github_repo: str) -> dict[str, Any]:
+        """Patch ``Project.github_repo`` after the CLI auto-creates the repo on GitHub.
+
+        Used by the runner's auto-create flow: the first tick on a project
+        with no ``github_repo`` set creates the repo via ``gh`` and then
+        calls this so subsequent ticks resolve the same value from
+        ``client.context()``.
+        """
+        return self._attempt(
+            "PATCH",
+            f"/api/ac/runner/{project_id}/project_github_repo/",
+            docs_path="/api/ac/runner/project_github_repo/",
+            json={"github_repo": github_repo},
+        )
+
 
 def _strip_host(path_or_url: str) -> str:
     parsed = urlparse(path_or_url)
