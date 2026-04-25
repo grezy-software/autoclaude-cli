@@ -137,6 +137,23 @@ def _apply_resumption(steps: list[dict[str, Any]], resumed_from: dict[str, Any] 
     first["prompt"] = f"{banner}\n\n{first['prompt']}"
 
 
+def _step_env(client: ApiClient, step: dict[str, Any]) -> dict[str, str]:
+    """Env vars handed to the claude subprocess for tool slash commands.
+
+    Tool manifests ship slash commands that curl back to the AutoClaude server
+    (see ``apps.autoclaude.tools.discord``). Those commands read these env
+    vars at execution time, so the runner must set them per step. Empty
+    values are still passed through; the slash command surfaces the failure
+    rather than the runner pre-judging it.
+    """
+    agent_config_id = step.get("agent_config_id")
+    return {
+        "AUTOCLAUDE_SERVER": client.base_url,
+        "AUTOCLAUDE_API_KEY": client.api_key,
+        "AUTOCLAUDE_AGENT_CONFIG_ID": "" if agent_config_id is None else str(agent_config_id),
+    }
+
+
 def _send_heartbeat(
     client: ApiClient,
     tick_id: int,
@@ -295,7 +312,12 @@ def _execute_steps(
                 "ordinal": ordinal,
             },
         )
-        result = run_step(prompt, cwd=repo_checkout, step_id=step_id)
+        result = run_step(
+            prompt,
+            cwd=repo_checkout,
+            step_id=step_id,
+            env=_step_env(client, step),
+        )
         storage.write_step_streams(state.tick_id, step_id, stdout=result.stdout, stderr=result.stderr)
         state.total_cost += result.total_cost_usd
         state.total_tokens += result.token_cost_estimate

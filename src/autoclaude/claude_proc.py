@@ -19,6 +19,7 @@ Failure detection has three layers:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -113,11 +114,20 @@ def run_step(
     cwd: Path,
     timeout: int = 3600,
     step_id: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> ClaudeResult:
-    """Run ``claude -p <prompt>`` in ``cwd`` and tee output to the logger."""
+    """Run ``claude -p <prompt>`` in ``cwd`` and tee output to the logger.
+
+    ``env`` is layered on top of the parent process env so plug-and-play tool
+    slash commands (``~/.claude/commands/<tool>.md``) can read tool-specific
+    config (server URL, API key, agent_config_id) without per-tool wiring.
+    """
     started = time.monotonic()
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []
+    subprocess_env = os.environ.copy()
+    if env:
+        subprocess_env.update(env)
     proc = subprocess.Popen(
         [
             "claude",
@@ -133,6 +143,7 @@ def run_step(
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        env=subprocess_env,
     )
     stdout_thread = threading.Thread(
         target=_tee_stream,

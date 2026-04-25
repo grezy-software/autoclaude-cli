@@ -13,6 +13,8 @@ import typer
 from autoclaude import __version__, repo_config
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.config import DEFAULT_URL, Config, Profile
+from autoclaude.daemon import DEFAULT_INTERVAL_SECONDS as DAEMON_DEFAULT_INTERVAL
+from autoclaude.daemon import run_daemon
 from autoclaude.gh import is_authenticated as gh_is_authenticated
 from autoclaude.gh import is_installed as gh_is_installed
 from autoclaude.log_uploader import replay_pending
@@ -24,6 +26,10 @@ from autoclaude.runner import (
 from autoclaude.runner import (
     run_tick as runner_run_tick,
 )
+from autoclaude.service_install import ServiceInstallError
+from autoclaude.service_install import install as service_install
+from autoclaude.service_install import status as service_status
+from autoclaude.service_install import uninstall as service_uninstall
 from autoclaude.storage import RepoStorage
 from autoclaude.workspace import workspace_home
 
@@ -107,6 +113,22 @@ def login(
     cfg.active = prof.name
     cfg.save()
     _log.info("[green]saved profile %r[/green] -> %s", prof.name, prof.url, extra={"source": "cli"})
+
+    if typer.confirm("Install background heartbeat (recommended)?", default=True):
+        try:
+            result = service_install(prof.name)
+        except ServiceInstallError as exc:
+            _log.warning(
+                "[yellow]daemon install failed[/yellow]: %s. Run `autoclaude install-daemon` to retry.",
+                exc,
+                extra={"source": "cli"},
+            )
+        else:
+            _log.info(
+                "[green]daemon installed[/green] (%s)",
+                result.detail,
+                extra={"source": "cli"},
+            )
 
 
 @app.command()
@@ -275,6 +297,67 @@ def init(
 def version() -> None:
     """Print the package version."""
     _log.info("%s", __version__, extra={"source": "cli"})
+
+
+@app.command()
+def daemon(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
+    interval: Annotated[
+        float,
+        typer.Option(
+            "--interval",
+            help="Heartbeat cadence in seconds (server may dial it down via the response).",
+        ),
+    ] = DAEMON_DEFAULT_INTERVAL,
+) -> None:
+    """Run the background heartbeat in the foreground.
+
+    Normally launched by the per-user service installed via
+    ``autoclaude login`` (or ``autoclaude install-daemon``). Run it
+    manually to debug locally; SIGINT/SIGTERM exits cleanly.
+    """
+    _cfg, prof = _load(ctx, profile)
+    try:
+        with ApiClient(prof, cli_version=__version__) as client:
+            run_daemon(client, cli_version=__version__, interval=interval)
+    except ApiError as exc:
+        _log.error("[red]daemon api error[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="install-daemon")
+def install_daemon(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Register the daemon as a per-user service for the current platform."""
+    _cfg, prof = _load(ctx, profile)
+    try:
+        result = service_install(prof.name)
+    except ServiceInstallError as exc:
+        _log.error("[red]install failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    _log.info("[green]daemon installed[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+@app.command(name="uninstall-daemon")
+def uninstall_daemon() -> None:
+    """Remove the per-user daemon service for the current platform."""
+    try:
+        result = service_uninstall()
+    except ServiceInstallError as exc:
+        _log.error("[red]uninstall failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    _log.info("[green]daemon removed[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+@app.command(name="daemon-status")
+def daemon_status() -> None:
+    """Print the current platform's daemon service status."""
+    try:
+        result = service_status()
+    except ServiceInstallError as exc:
+        _log.error("[red]status failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    _log.info("daemon status (%s): %s", result.platform, result.detail, extra={"source": "cli"})
 
 
 if __name__ == "__main__":

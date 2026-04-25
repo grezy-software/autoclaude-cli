@@ -109,6 +109,9 @@ def test_apply_resumption_prepends_to_first_step() -> None:
 class _FakeApiClient:
     """Minimal stand-in for ``ApiClient`` that records calls."""
 
+    base_url = "https://fake.invalid"
+    api_key = "fake-key"
+
     def __init__(
         self,
         tick_open_response: dict[str, Any],

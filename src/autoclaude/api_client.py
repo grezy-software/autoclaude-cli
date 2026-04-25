@@ -101,6 +101,16 @@ class ApiClient:
     def autoclaude_root(self: Self) -> Path:
         return self._root
 
+    @property
+    def base_url(self: Self) -> str:
+        """Server URL (no trailing slash). Used to build env vars for sub-tools."""
+        return str(self._client.base_url).rstrip("/")
+
+    @property
+    def api_key(self: Self) -> str:
+        """Raw API key for the active profile. Used to build env vars for sub-tools."""
+        return self._profile.api_key or ""
+
     def tracker_snapshot(self: Self) -> dict[str, str]:
         return self._tracker.snapshot()
 
@@ -396,6 +406,55 @@ class ApiClient:
             "/api/ac/tools/discord/post/",
             docs_path="/api/ac/tools/discord/post/",
             json={"agent_config_id": agent_config_id, "content": content},
+        )
+
+    def heartbeat(
+        self: Self,
+        *,
+        installation_id: str,
+        hostname: str = "",
+        os_platform: str = "",
+        cli_version: str = "",
+        team_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Tell the server this CLI install is alive and pull any pending small tasks.
+
+        Independent of the per-tick heartbeat. Returns a payload of the
+        shape ``{ok, next_heartbeat_in_seconds, tasks: [...]}``.
+        """
+        payload: dict[str, Any] = {
+            "installation_id": installation_id,
+            "hostname": hostname,
+            "os_platform": os_platform,
+            "cli_version": cli_version or self._cli_version,
+        }
+        if team_id is not None:
+            payload["team_id"] = int(team_id)
+        return self._attempt(
+            "POST",
+            "/api/ac/runner/heartbeat/",
+            docs_path="/api/ac/runner/heartbeat/",
+            json=payload,
+        )
+
+    def runner_task_complete(
+        self: Self,
+        task_id: int,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+        error_log: str = "",
+    ) -> dict[str, Any]:
+        """Report completion (or failure) of a previously claimed RunnerTask."""
+        return self._attempt(
+            "PATCH",
+            f"/api/ac/runner/{task_id}/runner_task_complete/",
+            docs_path="/api/ac/runner/runner_task_complete/",
+            json={
+                "status": status,
+                "result": result or {},
+                "error_log": error_log,
+            },
         )
 
     def update_project_github_repo(self: Self, project_id: int, github_repo: str) -> dict[str, Any]:
