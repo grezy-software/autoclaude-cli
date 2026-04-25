@@ -229,6 +229,41 @@ class Workspace:
         _log.info("worktree %s on %s", target, branch, extra={"source": "workspace"})
         return Worktree(path=target, branch=branch)
 
+    def push_branch(self, branch: str, *, force: bool = False) -> str:
+        """Push ``branch`` to origin and return its remote tree URL.
+
+        Always tracks the remote branch (``-u``) so a subsequent push from
+        a resumed tick fast-forwards instead of recreating the upstream.
+        Empty branches (no commits since fork) push cleanly as a thin ref
+        update on GitHub; useful so the user can see the branch landing
+        page even when the agent only posted comments.
+
+        Raises ``WorkspaceError`` for non-GitHub workspaces (test fixtures
+        cloned from a local path) since pushing back to a tmpdir would
+        rewrite the test source. Production callers always have
+        ``_owner_repo`` set.
+        """
+        if not self._owner_repo:
+            msg = "push_branch is only supported for github_repo workspaces"
+            raise WorkspaceError(msg)
+        push_args = [*_gh_credential_helper_args(), "push"]
+        if force:
+            push_args.append("--force-with-lease")
+        push_args += ["-u", "origin", branch]
+        _git(push_args, cwd=self.clone_path)
+        url = f"https://github.com/{self._owner_repo}/tree/{branch}"
+        _log.info("pushed %s -> %s", branch, url, extra={"source": "workspace"})
+        return url
+
+    def branch_url(self, branch: str) -> str:
+        """Return the GitHub web URL for ``branch`` on this workspace's repo.
+
+        Empty for local-path workspaces (no GitHub origin).
+        """
+        if not self._owner_repo:
+            return ""
+        return f"https://github.com/{self._owner_repo}/tree/{branch}"
+
     def remove_worktree(self, worktree: Worktree) -> None:
         """Remove the worktree directory but keep its branch.
 

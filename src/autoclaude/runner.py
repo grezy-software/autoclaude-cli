@@ -60,6 +60,7 @@ STEP_REPO_SYNC = "repo_sync"
 STEP_STORAGE_PREP = "storage_prep"
 STEP_TOOL_RECONCILE = "tool_reconcile"
 STEP_WORKSPACE_PREP = "workspace_prep"
+STEP_BRANCH_PUSH = "branch_push"
 STEP_FINALIZE = "finalize"
 STEP_WORKSPACE_CLEANUP = "workspace_cleanup"
 STEP_LOG_FLUSH = "log_flush"
@@ -98,6 +99,9 @@ class _TickState:
     status: str = STATUS_SUCCEEDED
     error: str = ""
     outcomes: list[str] = field(default_factory=list)
+    # Set after the branch_push cleanup step succeeds; surfaced in the tick
+    # outcome so operators can click through to the changes.
+    branch_url: str = ""
 
 
 def _utcnow() -> datetime:
@@ -699,6 +703,26 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
 
             cleanup_base = last_agent_ordinal + 1 if steps else agent_start_ordinal
 
+            def _do_branch_push() -> str:
+                # Push the worktree branch first so its URL is available when
+                # `_do_finalize` writes the tick summary, and so any agent
+                # comments referencing the URL resolve immediately. Best-effort:
+                # a push hiccup must not flip the tick to failed, since the
+                # work itself is already committed locally.
+                url = workspace.push_branch(worktree.branch)
+                state.branch_url = url
+                return f"pushed {worktree.branch} -> {url}"
+
+            _run_lifecycle_step(
+                client,
+                tick_id=state.tick_id,
+                kind=KIND_CLEANUP,
+                name=STEP_BRANCH_PUSH,
+                ordinal=cleanup_base,
+                action=f"git push -u origin {worktree.branch}",
+                work=_do_branch_push,
+            )
+
             def _do_finalize() -> str:
                 # Upload the file-tree snapshot before closing so the dashboard
                 # always has a layout for the terminal tick. Failures here are
@@ -710,10 +734,13 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                         client.upload_tick_file_tree(state.tick_id, snapshot)
                     except ApiError as exc:
                         _log.warning("file tree upload failed: %s", exc, extra={"source": "cli"})
+                outcome_lines = list(state.outcomes)
+                if state.branch_url:
+                    outcome_lines.append(f"branch: {state.branch_url}")
                 client.close_tick(
                     state.tick_id,
                     status=state.status,
-                    outcome="\n".join(state.outcomes),
+                    outcome="\n".join(outcome_lines),
                     error_log=state.error,
                     cost_usd=state.total_cost,
                     token_cost_estimate=state.total_tokens,
@@ -726,7 +753,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_FINALIZE,
-                ordinal=cleanup_base,
+                ordinal=cleanup_base + 1,
                 action="close_tick + write last_tick.json + summary.json",
                 work=_do_finalize,
             )
@@ -742,7 +769,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_WORKSPACE_CLEANUP,
-                ordinal=cleanup_base + 1,
+                ordinal=cleanup_base + 2,
                 action=f"workspace.remove_worktree({worktree.path})",
                 work=_do_workspace_cleanup,
             )
@@ -756,7 +783,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_LOG_FLUSH,
-                ordinal=cleanup_base + 2,
+                ordinal=cleanup_base + 3,
                 action=f"TickLogger.flush(timeout={_LOG_FLUSH_TIMEOUT})",
                 work=_do_log_flush,
             )
