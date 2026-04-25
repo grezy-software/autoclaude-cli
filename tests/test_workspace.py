@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import autoclaude.workspace as wsmod
 from autoclaude.workspace import (
     AUTOCLAUDE_HOME_ENV,
     Workspace,
@@ -71,6 +72,81 @@ def test_for_github_repo_rejects_invalid_input(tmp_path) -> None:
 def test_for_github_repo_sets_canonical_clone_url(tmp_path) -> None:
     ws = Workspace.for_github_repo("soaria-app/soaria", home=tmp_path / "home")
     assert ws.clone_url == "https://github.com/soaria-app/soaria.git"
+
+
+def test_github_workspace_clone_routes_through_gh(tmp_path, monkeypatch) -> None:
+    """First-run clone must call `gh repo clone` so the user is never asked for a password."""
+    calls: list[tuple[str, list[str]]] = []
+
+    class _GhResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_gh(args, *, cwd=None, check=True):  # noqa: ARG001
+        calls.append(("gh", args))
+        # Pretend gh did the clone by creating an empty .git so subsequent
+        # logic sees a "real" clone.
+        target = Path(args[-1])
+        (target / ".git").mkdir(parents=True, exist_ok=True)
+        return _GhResult()
+
+    def _fake_git(args, *, cwd=None, check=True):  # noqa: ARG001
+        calls.append(("git", args))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(wsmod, "_run_gh", _fake_gh)
+    monkeypatch.setattr(wsmod, "_git", _fake_git)
+    monkeypatch.setattr(wsmod, "ensure_gh_installed", lambda: None)
+
+    ws = Workspace.for_github_repo("soaria-app/soaria", home=tmp_path / "home")
+    ws.sync()
+
+    cmds = [(tool, args[0]) for tool, args in calls]
+    assert ("gh", "repo") in cmds, f"expected `gh repo clone`, got {cmds!r}"
+    # No naked `git clone` — that would prompt for credentials.
+    assert ("git", "clone") not in cmds
+
+
+def test_github_workspace_fetch_uses_gh_credential_helper(tmp_path, monkeypatch) -> None:
+    """Subsequent fetches must inject `gh auth git-credential` for one call only."""
+    git_calls: list[list[str]] = []
+
+    def _fake_git(args, *, cwd=None, check=True):  # noqa: ARG001
+        git_calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(wsmod, "_git", _fake_git)
+    monkeypatch.setattr(wsmod, "_run_gh", lambda *_a, **_k: None)
+    monkeypatch.setattr(wsmod, "ensure_gh_installed", lambda: None)
+
+    ws = Workspace.for_github_repo("soaria-app/soaria", home=tmp_path / "home")
+    # Pre-create the clone path so sync skips the initial clone branch.
+    ws.clone_path.mkdir(parents=True, exist_ok=True)
+    ws.sync()
+
+    fetch_calls = [args for args in git_calls if "fetch" in args]
+    assert fetch_calls, "expected at least one git fetch"
+    fetch_args = fetch_calls[0]
+    assert "credential.helper=!gh auth git-credential" in fetch_args
+    # The empty override before our helper guards against an inherited prompt-helper firing first.
+    assert fetch_args.count("credential.helper=") >= 1
+
+
+def test_local_path_workspace_does_not_use_gh_clone(tmp_path) -> None:
+    """Local-path test fixtures still use plain `git clone` -- no gh needed for offline tests."""
+    source = _make_source_repo(tmp_path / "src")
+    ws = Workspace.for_local_path(source, home=tmp_path / "home")
+    ws.sync()
+    # Sanity: the clone exists and points at the local source.
+    url = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(ws.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert url.stdout.strip() == ws.clone_url
 
 
 def test_sync_clones_first_then_fetches(tmp_path) -> None:

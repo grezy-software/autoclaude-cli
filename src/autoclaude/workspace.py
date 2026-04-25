@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from autoclaude.gh import ensure_installed as ensure_gh_installed
+from autoclaude.gh import gh as _run_gh
 from autoclaude.logger import get_logger
 
 _log = get_logger("workspace")
@@ -85,10 +86,20 @@ class WorkspaceError(RuntimeError):
 class Workspace:
     """Manage the per-project GitHub clone and its per-tick worktrees."""
 
-    def __init__(self, home: Path, slug: str, clone_url: str) -> None:
+    def __init__(
+        self,
+        home: Path,
+        slug: str,
+        clone_url: str,
+        *,
+        owner_repo: str = "",
+    ) -> None:
         self._home = home
         self._slug = slug
         self._clone_url = clone_url
+        # Empty for local-path tests; populated when the workspace targets
+        # github.com so ``sync`` can route the clone through ``gh``.
+        self._owner_repo = owner_repo
 
     @classmethod
     def for_github_repo(cls, github_repo: str, *, home: Path | None = None) -> Workspace:
@@ -101,10 +112,12 @@ class Workspace:
             clone_url = _canonical_github_clone_url(github_repo)
         except ValueError as exc:
             raise WorkspaceError(f"invalid github_repo {github_repo!r}: {exc}") from exc
+        owner_repo = clone_url.removeprefix("https://github.com/").removesuffix(".git")
         return cls(
             home=home or workspace_home(),
             slug=derive_slug(github_repo),
             clone_url=clone_url,
+            owner_repo=owner_repo,
         )
 
     @classmethod
@@ -112,7 +125,9 @@ class Workspace:
         """Test-only hook: clone from a local path instead of GitHub.
 
         Lets the test suite exercise the full workspace lifecycle offline.
-        Production code paths must use ``for_github_repo``.
+        Production code paths must use ``for_github_repo``. Leaves
+        ``owner_repo`` empty so ``sync`` falls back to plain ``git clone``
+        rather than asking ``gh`` to resolve a non-GitHub URL.
         """
         resolved = source.resolve()
         slug_short = _SLUG_SAFE_RE.sub("-", resolved.name.lower()).strip("-") or "repo"
@@ -121,6 +136,7 @@ class Workspace:
             home=home or workspace_home(),
             slug=f"{slug_short[:_SLUG_MAX_LENGTH]}-{digest}",
             clone_url=str(resolved),
+            owner_repo="",
         )
 
     @property
@@ -154,20 +170,38 @@ class Workspace:
     def sync(self) -> Path:
         """Ensure the clone exists and is up to date with the canonical URL.
 
-        First call clones the GitHub URL into ``clone_path``; subsequent
-        calls re-pin ``origin`` (in case the project moved or the test
-        fixture rebuilt the source) and fetch every ref. Returns the clone
-        path. ``origin`` is GitHub itself, so ``gh`` resolves the right
-        repo without an auxiliary remote.
+        First call clones into ``clone_path``; subsequent calls re-pin
+        ``origin`` (in case the project moved or the test fixture rebuilt
+        the source) and fetch every ref. Returns the clone path.
+
+        Authentication: GitHub clones go through ``gh repo clone``, which
+        reuses the gh-CLI session token without prompting. Subsequent
+        ``git fetch``es inject ``gh``'s credential helper for one
+        invocation only via ``-c credential.helper='!gh auth git-credential'``,
+        so we never touch the user's global gitconfig and never let plain
+        ``git`` prompt for an HTTPS password. Local-path workspaces (test
+        fixtures) skip both and use plain ``git clone``/``fetch``.
         """
         _require_gh()
         self.clone_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.clone_path.exists():
-            _git(["clone", self._clone_url, str(self.clone_path)])
-            _log.info("cloned %s -> %s", self._clone_url, self.clone_path, extra={"source": "workspace"})
+            if self._owner_repo:
+                _gh_clone(self._owner_repo, self.clone_path)
+                _log.info(
+                    "cloned %s -> %s (via gh)",
+                    self._owner_repo,
+                    self.clone_path,
+                    extra={"source": "workspace"},
+                )
+            else:
+                _git(["clone", self._clone_url, str(self.clone_path)])
+                _log.info("cloned %s -> %s", self._clone_url, self.clone_path, extra={"source": "workspace"})
             return self.clone_path
         _git(["remote", "set-url", "origin", self._clone_url], cwd=self.clone_path)
-        _git(["fetch", "--prune", "origin"], cwd=self.clone_path)
+        if self._owner_repo:
+            _git([*_gh_credential_helper_args(), "fetch", "--prune", "origin"], cwd=self.clone_path)
+        else:
+            _git(["fetch", "--prune", "origin"], cwd=self.clone_path)
         return self.clone_path
 
     # --- worktrees ------------------------------------------------------------
@@ -293,6 +327,38 @@ def _require_gh() -> None:
         ensure_gh_installed()
     except RuntimeError as exc:
         raise WorkspaceError(str(exc)) from exc
+
+
+def _gh_clone(owner_repo: str, dest: Path) -> None:
+    """Clone via ``gh repo clone`` so the gh-CLI session token is reused.
+
+    Plain ``git clone https://github.com/...`` would prompt for a username
+    and password unless the user has already run ``gh auth setup-git``.
+    Routing through ``gh repo clone`` reads gh's stored credential
+    directly and never prompts. We translate gh failures into
+    ``WorkspaceError`` so ``run_tick`` reports a single exception type.
+    """
+    try:
+        _run_gh(["repo", "clone", owner_repo, str(dest)])
+    except RuntimeError as exc:
+        raise WorkspaceError(f"gh repo clone {owner_repo} failed: {exc}") from exc
+
+
+def _gh_credential_helper_args() -> list[str]:
+    """``-c`` flags that hand git ``gh``'s credential helper for one call.
+
+    Used for ``git fetch`` against a github.com origin so the operation
+    reuses the gh session without us writing anything to the user's
+    global gitconfig (which is what ``gh auth setup-git`` would do).
+    The empty first override clears any inherited helper so prompts
+    from a misconfigured one cannot fire before ours runs.
+    """
+    return [
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.helper=!gh auth git-credential",
+    ]
 
 
 def _git(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
