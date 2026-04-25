@@ -1,3 +1,10 @@
+## [1.9.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.9.0...v1.9.1) (2026-04-25)
+
+
+### Bug Fixes
+
+* **workspace:** clone via gh repo clone so git never prompts for HTTPS auth ([9e32672](https://github.com/grezy-software/autoclaude-cli/commit/9e326724c2796ae15e9fc19a0e9c880e1ce24beb))
+
 # [1.9.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.8.2...v1.9.0) (2026-04-25)
 
 
