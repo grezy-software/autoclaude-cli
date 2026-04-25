@@ -116,7 +116,6 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     _log.info("profile: [bold]%s[/bold]", prof.name, extra={"source": "cli"})
     _log.info("url: %s", prof.url or "[red]missing[/red]", extra={"source": "cli"})
     _log.info("api_key set: %s", "yes" if prof.api_key else "[red]no[/red]", extra={"source": "cli"})
-    _log.info("repo_checkout: %s", prof.repo_checkout or "[yellow]unset[/yellow]", extra={"source": "cli"})
     _log.info("autoclaude_root: %s", prof.resolve_autoclaude_root(), extra={"source": "cli"})
     _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
 
@@ -216,31 +215,21 @@ def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
 def tick(
     ctx: typer.Context,
     profile: ProfileOption = None,
-    repo: Annotated[
-        Path | None,
-        typer.Option("--repo", help="Source repo to mirror into the autoclaude workspace. Defaults to CWD or the profile's saved checkout."),
-    ] = None,
 ) -> None:
     """Run one tick.
 
-    The source repo is cloned into ``$AUTOCLAUDE_HOME/repos/<slug>/`` and
-    each tick runs inside a dedicated git worktree on its own branch. The
-    user's checkout is never modified.
+    The project's GitHub repo (resolved from the server-side runner
+    context) is cloned into ``$AUTOCLAUDE_HOME/repos/<slug>/`` and each
+    tick runs inside a dedicated git worktree on its own branch. No
+    local checkout is involved -- ``autoclaude tick`` can be run from
+    any directory.
     """
-    cfg, prof = _load(ctx, profile)
-    source = repo or (Path(prof.repo_checkout) if prof.repo_checkout else Path.cwd())
-    if not (source / ".git").exists():
-        _log.error("[red]not a git repo[/red]: %s", source, extra={"source": "cli"})
-        raise typer.Exit(code=2)
-    if repo is not None:
-        prof.repo_checkout = str(repo)
-        cfg.profiles[prof.name] = prof
-        cfg.save()
+    _cfg, prof = _load(ctx, profile)
     try:
         with ApiClient(prof, cli_version=__version__) as client:
             with contextlib.suppress(Exception):
                 replay_pending(client)
-            exit_code = runner_run_tick(client, source_repo=source)
+            exit_code = runner_run_tick(client)
     except ApiError as exc:
         _log.error("[red]api error[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc

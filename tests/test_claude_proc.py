@@ -155,8 +155,7 @@ def _write_fake_claude_emitting(payload: dict, tmp_path, monkeypatch) -> None:
     fake_script = fake_claude_dir / "claude"
     encoded = json.dumps(payload)
     fake_script.write_text(
-        f"#!{sys.executable}\n"
-        f"import sys\nsys.stdout.write({encoded!r})\nsys.exit(0)\n",
+        f"#!{sys.executable}\nimport sys\nsys.stdout.write({encoded!r})\nsys.exit(0)\n",
         encoding="utf-8",
     )
     fake_script.chmod(0o755)
@@ -190,10 +189,7 @@ def test_run_step_flags_bail_marker(tmp_path, monkeypatch) -> None:
             "type": "result",
             "subtype": "success",
             "is_error": False,
-            "result": (
-                "The `gh` CLI cannot operate on this repository.\n\n"
-                "[autoclaude:fail] No GitHub remote configured"
-            ),
+            "result": ("The `gh` CLI cannot operate on this repository.\n\n[autoclaude:fail] No GitHub remote configured"),
             "total_cost_usd": 0.01,
         },
         tmp_path,

@@ -43,31 +43,49 @@ def test_workspace_home_defaults_to_dot_autoclaude(tmp_path, monkeypatch) -> Non
     assert workspace_home() == tmp_path / ".autoclaude"
 
 
-def test_derive_slug_disambiguates_same_basename(tmp_path) -> None:
-    a = tmp_path / "one" / "nango"
-    b = tmp_path / "two" / "nango"
-    a.mkdir(parents=True)
-    b.mkdir(parents=True)
-    slug_a = derive_slug(a)
-    slug_b = derive_slug(b)
-    assert slug_a != slug_b
-    assert slug_a.startswith("nango-")
-    assert slug_b.startswith("nango-")
+def test_derive_slug_uses_github_repo() -> None:
+    slug = derive_slug("soaria-app/soaria")
+    assert slug.startswith("soaria-app-soaria-")
+    # Hash suffix is 8 hex chars.
+    assert len(slug.split("-")[-1]) == 8
+
+
+def test_derive_slug_changes_when_repo_renamed() -> None:
+    """Slug must include the canonical URL hash so a renamed repo gets a fresh clone dir."""
+    a = derive_slug("soaria-app/soaria")
+    b = derive_slug("soaria-app/soaria-renamed")
+    assert a != b
+
+
+def test_derive_slug_normalises_input_shapes() -> None:
+    plain = derive_slug("soaria-app/soaria")
+    full_url = derive_slug("https://github.com/soaria-app/soaria.git")
+    assert plain == full_url
+
+
+def test_for_github_repo_rejects_invalid_input(tmp_path) -> None:
+    with pytest.raises(WorkspaceError):
+        Workspace.for_github_repo("not a repo", home=tmp_path / "home")
+
+
+def test_for_github_repo_sets_canonical_clone_url(tmp_path) -> None:
+    ws = Workspace.for_github_repo("soaria-app/soaria", home=tmp_path / "home")
+    assert ws.clone_url == "https://github.com/soaria-app/soaria.git"
 
 
 def test_sync_clones_first_then_fetches(tmp_path) -> None:
     source = _make_source_repo(tmp_path / "src")
     home = tmp_path / "home"
-    workspace = Workspace.for_source(source, home=home)
+    workspace = Workspace.for_local_path(source, home=home)
 
-    workspace.sync(source)
+    workspace.sync()
     assert (workspace.clone_path / ".git").exists()
 
     # Second commit in source should be pulled in by a subsequent sync.
     (source / "NEW.md").write_text("new\n", encoding="utf-8")
     _git(["add", "NEW.md"], cwd=source)
     _git(["commit", "-q", "-m", "second"], cwd=source)
-    workspace.sync(source)
+    workspace.sync()
 
     log = subprocess.run(
         ["git", "log", "--format=%s", "origin/main"],
@@ -79,18 +97,26 @@ def test_sync_clones_first_then_fetches(tmp_path) -> None:
     assert "second" in log.stdout
 
 
-def test_sync_rejects_non_repo(tmp_path) -> None:
-    not_a_repo = tmp_path / "plain"
-    not_a_repo.mkdir()
-    workspace = Workspace.for_source(not_a_repo, home=tmp_path / "home")
-    with pytest.raises(WorkspaceError):
-        workspace.sync(not_a_repo)
+def test_sync_origin_points_at_clone_url(tmp_path) -> None:
+    """Origin must equal `workspace.clone_url` so `gh` resolves the right repo."""
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_local_path(source, home=tmp_path / "home")
+    workspace.sync()
+
+    url = subprocess.run(
+        ["git", "remote", "get-url", "origin"],
+        cwd=str(workspace.clone_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert url.stdout.strip() == workspace.clone_url
 
 
 def test_create_worktree_creates_branch(tmp_path) -> None:
     source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
+    workspace = Workspace.for_local_path(source, home=tmp_path / "home")
+    workspace.sync()
 
     worktree = workspace.create_worktree(42)
     assert worktree.path.exists()
@@ -108,8 +134,8 @@ def test_create_worktree_creates_branch(tmp_path) -> None:
 
 def test_remove_worktree_keeps_branch(tmp_path) -> None:
     source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
+    workspace = Workspace.for_local_path(source, home=tmp_path / "home")
+    workspace.sync()
     worktree = workspace.create_worktree(7)
     workspace.remove_worktree(worktree)
 
@@ -123,49 +149,6 @@ def test_remove_worktree_keeps_branch(tmp_path) -> None:
         check=True,
     )
     assert worktree.branch in branches.stdout
-
-
-def test_configure_github_remote_is_idempotent(tmp_path) -> None:
-    source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
-
-    workspace.configure_github_remote("soaria-app/soaria")
-    url = subprocess.run(
-        ["git", "remote", "get-url", "github"],
-        cwd=str(workspace.clone_path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert url.stdout.strip() == "https://github.com/soaria-app/soaria.git"
-
-    # Re-running must not fail; it just updates in place.
-    workspace.configure_github_remote("soaria-app/soaria")
-    workspace.configure_github_remote("another-org/another-repo")
-    url = subprocess.run(
-        ["git", "remote", "get-url", "github"],
-        cwd=str(workspace.clone_path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert url.stdout.strip() == "https://github.com/another-org/another-repo.git"
-
-
-def test_configure_github_remote_noop_on_empty(tmp_path) -> None:
-    source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
-    workspace.configure_github_remote("")
-    remotes = subprocess.run(
-        ["git", "remote"],
-        cwd=str(workspace.clone_path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert "github" not in remotes.stdout.split()
 
 
 _CANONICAL_URL = "https://github.com/soaria-app/soaria.git"
@@ -208,49 +191,10 @@ def test_canonical_github_clone_url_rejects_malformed(value: str) -> None:
         _canonical_github_clone_url(value)
 
 
-def test_configure_github_remote_recovers_from_double_prefix(tmp_path) -> None:
-    """The production bug: server sent `https://github.com/<full-url>`; CLI must fix it."""
-    source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
-
-    # Seed a broken remote as if a previous tick ran the buggy URL builder.
-    subprocess.run(
-        [
-            "git",
-            "remote",
-            "add",
-            "github",
-            "https://github.com/https://github.com/soaria-app/soaria.git",
-        ],
-        cwd=str(workspace.clone_path),
-        check=True,
-    )
-
-    workspace.configure_github_remote("https://github.com/soaria-app/soaria.git")
-
-    url = subprocess.run(
-        ["git", "remote", "get-url", "github"],
-        cwd=str(workspace.clone_path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    assert url.stdout.strip() == _CANONICAL_URL
-
-
-def test_configure_github_remote_raises_on_garbage(tmp_path) -> None:
-    source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
-    with pytest.raises(WorkspaceError):
-        workspace.configure_github_remote("not a repo at all")
-
-
 def test_create_worktree_replaces_stale_directory(tmp_path) -> None:
     source = _make_source_repo(tmp_path / "src")
-    workspace = Workspace.for_source(source, home=tmp_path / "home")
-    workspace.sync(source)
+    workspace = Workspace.for_local_path(source, home=tmp_path / "home")
+    workspace.sync()
 
     # Simulate a stale worktree dir left from a previous run.
     stale = workspace.worktree_path(99)

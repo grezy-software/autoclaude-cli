@@ -45,9 +45,9 @@ def test_workspace_sync_aborts_when_gh_missing(tmp_path, monkeypatch) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / ".git").mkdir()  # just needs to look like a repo; sync checks gh first
 
-    ws = workspace.Workspace.for_source(tmp_path / "src", home=tmp_path / "home")
+    ws = workspace.Workspace.for_local_path(tmp_path / "src", home=tmp_path / "home")
     with pytest.raises(workspace.WorkspaceError) as err:
-        ws.sync(tmp_path / "src")
+        ws.sync()
     assert "github" in str(err.value).lower()
 
 

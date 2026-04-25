@@ -1,7 +1,8 @@
 """Dedicated autoclaude workspace: clones + per-tick git worktrees.
 
-The CLI must never run ``claude`` directly in the user's working checkout.
-Instead, every source repo is mirrored into
+The CLI never operates on the user's working checkout. Every project's
+source-of-truth is its GitHub repo, identified by ``github_repo`` on the
+server-side ``Project``. We clone that into
 ``$AUTOCLAUDE_HOME/repos/<slug>/`` (a real clone, not bare) and each tick
 spawns a short-lived worktree at ``$AUTOCLAUDE_HOME/worktrees/<slug>/<tick_id>/``
 on its own ``autoclaude/<slug>/tick-<tick_id>`` branch. This keeps the
@@ -36,7 +37,6 @@ AUTOCLAUDE_HOME_ENV = "AUTOCLAUDE_HOME"
 DEFAULT_HOME_DIRNAME = ".autoclaude"
 REPOS_DIRNAME = "repos"
 WORKTREES_DIRNAME = "worktrees"
-_GITHUB_REMOTE_NAME = "github"
 
 _SLUG_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _SLUG_MAX_LENGTH = 48
@@ -55,16 +55,20 @@ def workspace_home() -> Path:
     return Path.home() / DEFAULT_HOME_DIRNAME
 
 
-def derive_slug(source: Path) -> str:
-    """Build a filesystem-safe slug from a local repo path.
+def derive_slug(github_repo: str) -> str:
+    """Build a filesystem-safe slug from a ``owner/repo`` GitHub identifier.
 
-    Combines the directory name with a short hash of the absolute path so
-    two repos with the same basename (e.g. two clones of ``nango``) never
-    collide in ``repos/``.
+    Combines a slugified ``owner-repo`` with a short hash of the canonical
+    clone URL. The hash guards against accidental reuse of a stale clone
+    when a repo is renamed/moved on GitHub: a different canonical URL
+    yields a different slug, so we clone fresh into a new directory rather
+    than fetching foreign refs into an old one.
     """
-    resolved = source.resolve()
-    base = _SLUG_SAFE_RE.sub("-", resolved.name.lower()).strip("-") or "repo"
-    digest = hashlib.sha1(str(resolved).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+    canonical = _canonical_github_clone_url(github_repo)
+    # Strip the suffix to make `<owner>-<repo>` legible in `~/.autoclaude/repos/`.
+    short = canonical.removeprefix("https://github.com/").removesuffix(".git")
+    base = _SLUG_SAFE_RE.sub("-", short.lower().replace("/", "-")).strip("-") or "repo"
+    digest = hashlib.sha1(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     return f"{base[:_SLUG_MAX_LENGTH]}-{digest}"
 
 
@@ -79,15 +83,45 @@ class WorkspaceError(RuntimeError):
 
 
 class Workspace:
-    """Manage the per-source clone and its per-tick worktrees."""
+    """Manage the per-project GitHub clone and its per-tick worktrees."""
 
-    def __init__(self, home: Path, slug: str) -> None:
+    def __init__(self, home: Path, slug: str, clone_url: str) -> None:
         self._home = home
         self._slug = slug
+        self._clone_url = clone_url
 
     @classmethod
-    def for_source(cls, source: Path, *, home: Path | None = None) -> Workspace:
-        return cls(home or workspace_home(), derive_slug(source))
+    def for_github_repo(cls, github_repo: str, *, home: Path | None = None) -> Workspace:
+        """Build a Workspace targeting ``github.com/<owner>/<repo>.git``.
+
+        Raises ``WorkspaceError`` when ``github_repo`` cannot be normalised
+        to a valid clone URL (e.g. the project has no ``github_repo`` set).
+        """
+        try:
+            clone_url = _canonical_github_clone_url(github_repo)
+        except ValueError as exc:
+            raise WorkspaceError(f"invalid github_repo {github_repo!r}: {exc}") from exc
+        return cls(
+            home=home or workspace_home(),
+            slug=derive_slug(github_repo),
+            clone_url=clone_url,
+        )
+
+    @classmethod
+    def for_local_path(cls, source: Path, *, home: Path | None = None) -> Workspace:
+        """Test-only hook: clone from a local path instead of GitHub.
+
+        Lets the test suite exercise the full workspace lifecycle offline.
+        Production code paths must use ``for_github_repo``.
+        """
+        resolved = source.resolve()
+        slug_short = _SLUG_SAFE_RE.sub("-", resolved.name.lower()).strip("-") or "repo"
+        digest = hashlib.sha1(str(resolved).encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
+        return cls(
+            home=home or workspace_home(),
+            slug=f"{slug_short[:_SLUG_MAX_LENGTH]}-{digest}",
+            clone_url=str(resolved),
+        )
 
     @property
     def home(self) -> Path:
@@ -96,6 +130,10 @@ class Workspace:
     @property
     def slug(self) -> str:
         return self._slug
+
+    @property
+    def clone_url(self) -> str:
+        return self._clone_url
 
     @property
     def clone_path(self) -> Path:
@@ -113,62 +151,24 @@ class Workspace:
 
     # --- sync -----------------------------------------------------------------
 
-    def sync(self, source: Path) -> Path:
-        """Ensure the clone exists and is up to date with ``source``.
+    def sync(self) -> Path:
+        """Ensure the clone exists and is up to date with the canonical URL.
 
-        First call clones ``source`` into ``clone_path``; subsequent calls
-        fetch every ref from it. Returns the clone path. The source is
-        treated as the authoritative remote named ``origin``.
+        First call clones the GitHub URL into ``clone_path``; subsequent
+        calls re-pin ``origin`` (in case the project moved or the test
+        fixture rebuilt the source) and fetch every ref. Returns the clone
+        path. ``origin`` is GitHub itself, so ``gh`` resolves the right
+        repo without an auxiliary remote.
         """
         _require_gh()
-        source_resolved = source.resolve()
-        if not (source_resolved / ".git").exists():
-            msg = f"source is not a git repo: {source_resolved}"
-            raise WorkspaceError(msg)
         self.clone_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.clone_path.exists():
-            _git(["clone", str(source_resolved), str(self.clone_path)])
-            _log.info("cloned %s -> %s", source_resolved, self.clone_path, extra={"source": "workspace"})
+            _git(["clone", self._clone_url, str(self.clone_path)])
+            _log.info("cloned %s -> %s", self._clone_url, self.clone_path, extra={"source": "workspace"})
             return self.clone_path
-        # Re-point origin in case the user moved the source checkout.
-        _git(["remote", "set-url", "origin", str(source_resolved)], cwd=self.clone_path)
+        _git(["remote", "set-url", "origin", self._clone_url], cwd=self.clone_path)
         _git(["fetch", "--prune", "origin"], cwd=self.clone_path)
         return self.clone_path
-
-    def configure_github_remote(self, github_repo: str) -> None:
-        """Attach a ``github`` remote pointing at ``github.com/<owner>/<repo>.git``.
-
-        ``origin`` stays pinned to the user's local source checkout so
-        ``sync`` keeps working against the user's working copy. ``gh`` prefers
-        any remote whose URL resolves to a GitHub host (in name priority
-        ``upstream`` > ``github`` > ``origin``), so this gives ``gh issue
-        list`` / ``gh pr create`` a real GitHub context without disturbing
-        the local-path fetch flow.
-
-        ``github_repo`` is accepted in any common form (``owner/repo``, a
-        full HTTPS URL, or an SSH URL) and normalised to the canonical
-        HTTPS clone URL. Malformed values (e.g. the server double-prefixed
-        ``https://github.com/https://github.com/...``) are rejected rather
-        than stored, since they break every later ``gh`` call.
-
-        Idempotent: creates the remote on first call, ``set-url`` on
-        subsequent calls. No-op on empty ``github_repo``.
-        """
-        if not github_repo:
-            return
-        try:
-            url = _canonical_github_clone_url(github_repo)
-        except ValueError as exc:
-            raise WorkspaceError(f"invalid github_repo {github_repo!r}: {exc}") from exc
-        existing = _git(["remote", "get-url", _GITHUB_REMOTE_NAME], cwd=self.clone_path, check=False)
-        if existing.returncode == 0:
-            if existing.stdout.strip() == url:
-                return
-            _git(["remote", "set-url", _GITHUB_REMOTE_NAME, url], cwd=self.clone_path)
-            _log.info("updated github remote -> %s", url, extra={"source": "workspace"})
-            return
-        _git(["remote", "add", _GITHUB_REMOTE_NAME, url], cwd=self.clone_path)
-        _log.info("added github remote %s -> %s", _GITHUB_REMOTE_NAME, url, extra={"source": "workspace"})
 
     # --- worktrees ------------------------------------------------------------
 

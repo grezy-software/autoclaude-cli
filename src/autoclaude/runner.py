@@ -419,12 +419,17 @@ def _cleanup_worktree(workspace: Workspace, worktree: Worktree) -> None:
         _log.warning("worktree cleanup failed: %s", exc, extra={"source": "cli"})
 
 
-def run_tick(client: ApiClient, *, source_repo: Path) -> int:
-    """Fire one tick against ``source_repo`` using an isolated worktree.
+def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace] | None = None) -> int:
+    """Fire one tick against the project's GitHub repo using an isolated worktree.
 
-    Captures wall-clock timings for the pre-tick-open phases (repo sync,
-    storage prep) so they can be replayed as ``TickStep`` rows once the
-    tick exists on the server.
+    The workspace is built from ``project.github_repo`` returned by the
+    server's runner context, so the local clone always matches the repo
+    the agent will issue ``gh`` against. ``workspace_factory`` is a
+    test-only seam: production calls ``Workspace.for_github_repo``.
+
+    Captures wall-clock timings for the pre-tick-open phases (context
+    fetch, repo sync, storage prep) so they can be replayed as
+    ``TickStep`` rows once the tick exists on the server.
     """
     try:
         ensure_gh_installed()
@@ -434,10 +439,26 @@ def run_tick(client: ApiClient, *, source_repo: Path) -> int:
 
     pending: list[_PendingLifecycleStep] = []
 
+    try:
+        ctx = client.context()
+    except ApiError as exc:
+        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
+        return EXIT_FAILED
+
+    project = ctx.get("project") or {}
+    github_repo = project.get("github_repo") or ""
+    if not github_repo:
+        _log.error(
+            "[red]project has no github_repo configured[/red]; set it in the dashboard before running ticks",
+            extra={"source": "cli"},
+        )
+        return EXIT_FAILED
+
+    factory = workspace_factory or Workspace.for_github_repo
     repo_sync_started = _utcnow()
     try:
-        workspace = Workspace.for_source(source_repo)
-        workspace.sync(source_repo)
+        workspace = factory(github_repo)
+        workspace.sync()
     except WorkspaceError as exc:
         _log.error("[red]workspace sync failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
@@ -447,8 +468,8 @@ def run_tick(client: ApiClient, *, source_repo: Path) -> int:
             kind=KIND_SETUP,
             started_at=repo_sync_started,
             ended_at=_utcnow(),
-            action=f"Workspace.for_source({source_repo}) + workspace.sync(...)",
-            summary=f"workspace cloned at {workspace.clone_path}",
+            action=f"Workspace.for_github_repo({github_repo!r}) + workspace.sync()",
+            summary=f"workspace cloned from {workspace.clone_url} at {workspace.clone_path}",
         ),
     )
 
@@ -481,34 +502,19 @@ def run_tick(client: ApiClient, *, source_repo: Path) -> int:
         return EXIT_LOCKED
 
     try:
-        return _run_tick_locked(client, workspace=workspace, storage=storage, pending=pending)
+        return _run_tick_locked(client, ctx=ctx, workspace=workspace, storage=storage, pending=pending)
     finally:
         tick_lock.release()
 
 
-def _run_tick_locked(  # noqa: PLR0911, PLR0912, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
+def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
     client: ApiClient,
     *,
+    ctx: dict[str, Any],
     workspace: Workspace,
     storage: RepoStorage,
     pending: list[_PendingLifecycleStep],
 ) -> int:
-    try:
-        ctx = client.context()
-    except ApiError as exc:
-        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
-        return EXIT_FAILED
-
-    # Wire a `github` remote so the issuer agent's `gh issue list` resolves the
-    # right repo; origin stays pinned to the user's local source for fetches.
-    project = ctx.get("project") or {}
-    github_repo = project.get("github_repo") or ""
-    if github_repo:
-        try:
-            workspace.configure_github_remote(github_repo)
-        except WorkspaceError as exc:
-            _log.warning("github remote config failed: %s", exc, extra={"source": "cli"})
-
     plan = ctx.get("plan")
     if plan is None or not plan.get("steps"):
         _log.warning("[yellow]no active job; nothing to do[/yellow]", extra={"source": "cli"})
@@ -523,11 +529,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0912, PLR0915, C901 (exit-code dispat
             started_at=tool_reconcile_started,
             ended_at=_utcnow(),
             action="_reconcile_tools(plan.tools)",
-            summary=(
-                f"{applied_tool_count} tool manifest(s) applied"
-                if applied_tool_count
-                else "no tool manifests drifted"
-            ),
+            summary=(f"{applied_tool_count} tool manifest(s) applied" if applied_tool_count else "no tool manifests drifted"),
         ),
     )
 
@@ -620,9 +622,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0912, PLR0915, C901 (exit-code dispat
                 start_ordinal=agent_start_ordinal,
             )
 
-            cleanup_base = (
-                last_agent_ordinal + 1 if steps else agent_start_ordinal
-            )
+            cleanup_base = last_agent_ordinal + 1 if steps else agent_start_ordinal
 
             def _do_finalize() -> str:
                 # Upload the file-tree snapshot before closing so the dashboard

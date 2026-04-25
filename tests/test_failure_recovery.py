@@ -20,7 +20,7 @@ from autoclaude.runner import (
     run_tick,
 )
 from autoclaude.storage import RepoStorage
-from autoclaude.workspace import AUTOCLAUDE_HOME_ENV
+from autoclaude.workspace import AUTOCLAUDE_HOME_ENV, Workspace
 
 
 def _make_source(path: Path) -> Path:
@@ -39,10 +39,22 @@ def _make_source(path: Path) -> Path:
 
 
 @pytest.fixture
-def source_repo(tmp_path, monkeypatch):
-    """Provide a real git source repo and an isolated workspace home."""
+def workspace_factory(tmp_path, monkeypatch):
+    """Build a `for_local_path` workspace factory keyed off a fresh source repo.
+
+    Production injects ``Workspace.for_github_repo`` as the factory; tests
+    swap in this local-path variant so the runner's clone step works
+    offline against a tmpdir-backed git repo. The fixture also isolates
+    ``$AUTOCLAUDE_HOME`` so per-test state never leaks.
+    """
     monkeypatch.setenv(AUTOCLAUDE_HOME_ENV, str(tmp_path / "ac-home"))
-    return _make_source(tmp_path / "src")
+    source = _make_source(tmp_path / "src")
+    home = tmp_path / "ac-home"
+
+    def _factory(_github_repo: str) -> Workspace:
+        return Workspace.for_local_path(source, home=home)
+
+    return _factory
 
 
 # --- detect_token_exhaustion ------------------------------------------------
@@ -97,9 +109,16 @@ def test_apply_resumption_prepends_to_first_step() -> None:
 class _FakeApiClient:
     """Minimal stand-in for ``ApiClient`` that records calls."""
 
-    def __init__(self, tick_open_response: dict[str, Any], context_plan: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        tick_open_response: dict[str, Any],
+        context_plan: dict[str, Any],
+        *,
+        github_repo: str = "fake-org/fake-repo",
+    ) -> None:
         self._tick_open_response = tick_open_response
         self._context_plan = context_plan
+        self._github_repo = github_repo
         self.heartbeat_calls: list[int] = []
         self.heartbeat_payloads: list[dict[str, Any]] = []
         self.open_step_calls: list[dict[str, Any]] = []
@@ -108,7 +127,10 @@ class _FakeApiClient:
         self._step_counter = 1000
 
     def context(self) -> dict[str, Any]:
-        return {"plan": self._context_plan}
+        return {
+            "plan": self._context_plan,
+            "project": {"github_repo": self._github_repo},
+        }
 
     def open_tick(self, *, runner_version: str, project_id: int | None = None) -> dict[str, Any]:  # noqa: ARG002
         return self._tick_open_response
@@ -238,7 +260,7 @@ def _basic_steps() -> list[dict[str, Any]]:
     ]
 
 
-def test_run_tick_closes_with_token_exhausted_and_skips_later_steps(source_repo, fake_run_step) -> None:
+def test_run_tick_closes_with_token_exhausted_and_skips_later_steps(workspace_factory, fake_run_step) -> None:
     calls = fake_run_step(
         lambda _p: ClaudeResult(ok=False, stdout="", stderr="Credit balance is too low.", token_exhausted=True),
     )
@@ -247,7 +269,7 @@ def test_run_tick_closes_with_token_exhausted_and_skips_later_steps(source_repo,
         context_plan={"steps": _basic_steps()},
     )
 
-    exit_code = run_tick(client, source_repo=source_repo)
+    exit_code = run_tick(client, workspace_factory=workspace_factory)
 
     assert exit_code == EXIT_TOKEN_EXHAUSTED
     assert len(calls) == 1, "second step must not run after token exhaustion"
@@ -255,21 +277,21 @@ def test_run_tick_closes_with_token_exhausted_and_skips_later_steps(source_repo,
     assert client.close_tick_calls[0]["status"] == "token_exhausted"
 
 
-def test_run_tick_pings_heartbeat_before_open_and_between_steps(source_repo, fake_run_step) -> None:
+def test_run_tick_pings_heartbeat_before_open_and_between_steps(workspace_factory, fake_run_step) -> None:
     fake_run_step(lambda _p: ClaudeResult(ok=True, stdout="ok", stderr="", total_cost_usd=0.0))
     client = _FakeApiClient(
         tick_open_response={"id": 7, "plan": {"steps": _basic_steps()}},
         context_plan={"steps": _basic_steps()},
     )
 
-    exit_code = run_tick(client, source_repo=source_repo)
+    exit_code = run_tick(client, workspace_factory=workspace_factory)
 
     assert exit_code == EXIT_OK
     # 1 ping right after open_tick + 1 at the top of each step (2 steps).
     assert client.heartbeat_calls == [7, 7, 7]
 
 
-def test_run_tick_tolerates_heartbeat_api_error(source_repo, fake_run_step, monkeypatch) -> None:
+def test_run_tick_tolerates_heartbeat_api_error(workspace_factory, fake_run_step, monkeypatch) -> None:
     fake_run_step(lambda _p: ClaudeResult(ok=True, stdout="ok", stderr=""))
 
     client = _FakeApiClient(
@@ -283,14 +305,14 @@ def test_run_tick_tolerates_heartbeat_api_error(source_repo, fake_run_step, monk
 
     monkeypatch.setattr(client, "tick_heartbeat", _raise_heartbeat)
 
-    exit_code = run_tick(client, source_repo=source_repo)
+    exit_code = run_tick(client, workspace_factory=workspace_factory)
 
     assert exit_code == EXIT_OK
     assert len(client.close_tick_calls) == 1
     assert client.close_tick_calls[0]["status"] == "succeeded"
 
 
-def test_run_tick_applies_resumption_banner_to_first_step(source_repo, fake_run_step) -> None:
+def test_run_tick_applies_resumption_banner_to_first_step(workspace_factory, fake_run_step) -> None:
     seen_prompts: list[str] = []
     fake_run_step(
         lambda prompt: seen_prompts.append(prompt) or ClaudeResult(ok=True, stdout="ok", stderr=""),
@@ -308,7 +330,7 @@ def test_run_tick_applies_resumption_banner_to_first_step(source_repo, fake_run_
         context_plan={"steps": _basic_steps()},
     )
 
-    exit_code = run_tick(client, source_repo=source_repo)
+    exit_code = run_tick(client, workspace_factory=workspace_factory)
 
     assert exit_code == EXIT_OK
     assert seen_prompts[0].startswith("[Resuming abandoned tick #10.")
