@@ -1,3 +1,10 @@
+# [1.12.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.11.0...v1.12.0) (2026-04-27)
+
+
+### Features
+
+* **daemon:** ship claude rate_limits, add task command, harden replay ([05fd567](https://github.com/grezy-software/autoclaude-cli/commit/05fd567fa86952887cebb9fcce2817a282316743))
+
 # [1.11.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.10.0...v1.11.0) (2026-04-25)
 
 
