@@ -194,3 +194,48 @@ def test_tracker_snapshot_reports_last_stage(tmp_path: Path) -> None:
 
 def test_stage_fresh_after_fresh_install() -> None:
     assert STAGE_FRESH == "fresh"
+
+
+def test_create_task_posts_expected_body(tmp_path: Path) -> None:
+    client = ApiClient(_profile(), autoclaude_root=tmp_path, cli_version="0.1.0")
+    captured: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        assert req.method == "POST"
+        assert req.url.path == "/api/ac/task/"
+        captured["body"] = json.loads(req.content.decode("utf-8"))
+        return httpx.Response(201, json={"id": 7, "status": "pending"})
+
+    _install_client(client, handler)
+    response = client.create_task(
+        team_id=3,
+        kind="issuer_review_comment",
+        title="Review #42",
+        action_url="https://example.com/issue/42",
+        source="issuer",
+        dedupe_key="issuer:issue:42",
+        project_id=11,
+    )
+    assert response == {"id": 7, "status": "pending"}
+    assert captured["body"] == {
+        "team_id": 3,
+        "kind": "issuer_review_comment",
+        "title": "Review #42",
+        "action_url": "https://example.com/issue/42",
+        "source": "issuer",
+        "dedupe_key": "issuer:issue:42",
+        "project_id": 11,
+    }
+
+
+def test_create_task_omits_unset_optional_fields(tmp_path: Path) -> None:
+    client = ApiClient(_profile(), autoclaude_root=tmp_path, cli_version="0.1.0")
+    captured: dict[str, object] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(req.content.decode("utf-8"))
+        return httpx.Response(201, json={"id": 1})
+
+    _install_client(client, handler)
+    client.create_task(team_id=1, kind="x", title="t")
+    assert captured["body"] == {"team_id": 1, "kind": "x", "title": "t"}

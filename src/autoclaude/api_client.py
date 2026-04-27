@@ -206,7 +206,15 @@ class ApiClient:
         request_kwargs: dict[str, Any] = {}
         if json is not None:
             request_kwargs["json"] = json
-        response = self._client.request(method, path, **request_kwargs)
+        try:
+            response = self._client.request(method, path, **request_kwargs)
+        except httpx.RequestError as exc:
+            # Network/timeout/DNS issues never reach _handle_failure (no
+            # response object). Surface them as ApiError so callers like the
+            # daemon's _tick_once can swallow them and retry on the next loop
+            # instead of crashing the process and forcing a launchd restart.
+            msg = f"{method} {self._client.base_url}{path} -> {type(exc).__name__}: {exc}"
+            raise ApiError(msg) from exc
         if response.status_code < 400:
             self._tracker.reset(effective_docs_path, lookup_method)
             if not response.content:
@@ -416,11 +424,16 @@ class ApiClient:
         os_platform: str = "",
         cli_version: str = "",
         team_id: int | None = None,
+        claude_usage: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Tell the server this CLI install is alive and pull any pending small tasks.
 
         Independent of the per-tick heartbeat. Returns a payload of the
         shape ``{ok, next_heartbeat_in_seconds, tasks: [...]}``.
+
+        ``claude_usage`` (optional) is a rate_limits sample captured by the
+        Claude Code status line; the daemon ships it at most every 15 minutes
+        so the dashboard can chart subscription usage over time.
         """
         payload: dict[str, Any] = {
             "installation_id": installation_id,
@@ -430,6 +443,8 @@ class ApiClient:
         }
         if team_id is not None:
             payload["team_id"] = int(team_id)
+        if claude_usage is not None:
+            payload["claude_usage"] = claude_usage
         return self._attempt(
             "POST",
             "/api/ac/runner/heartbeat/",
@@ -455,6 +470,55 @@ class ApiClient:
                 "result": result or {},
                 "error_log": error_log,
             },
+        )
+
+    def create_task(
+        self: Self,
+        *,
+        team_id: int,
+        kind: str,
+        title: str,
+        body: str = "",
+        action_url: str = "",
+        payload: dict[str, Any] | None = None,
+        source: str = "",
+        dedupe_key: str = "",
+        project_id: int | None = None,
+        tick_id: int | None = None,
+        user_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Create (or refresh) a user-actionable Task on the server.
+
+        Posts to ``/api/ac/task/``. When ``dedupe_key`` is set and a non-terminal
+        task already exists for ``(user, dedupe_key)``, the server refreshes its
+        title, body, action_url, and payload instead of creating a duplicate.
+        """
+        json_body: dict[str, Any] = {
+            "team_id": int(team_id),
+            "kind": kind,
+            "title": title,
+        }
+        if body:
+            json_body["body"] = body
+        if action_url:
+            json_body["action_url"] = action_url
+        if payload:
+            json_body["payload"] = payload
+        if source:
+            json_body["source"] = source
+        if dedupe_key:
+            json_body["dedupe_key"] = dedupe_key
+        if project_id is not None:
+            json_body["project_id"] = int(project_id)
+        if tick_id is not None:
+            json_body["tick_id"] = int(tick_id)
+        if user_id is not None:
+            json_body["user_id"] = int(user_id)
+        return self._attempt(
+            "POST",
+            "/api/ac/task/",
+            docs_path="/api/ac/task/",
+            json=json_body,
         )
 
     def update_project_github_repo(self: Self, project_id: int, github_repo: str) -> dict[str, Any]:

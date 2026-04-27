@@ -129,6 +129,48 @@ def test_replay_pending_on_startup(api, httpx_mock, tmp_path, monkeypatch) -> No
     assert not file_path.exists()
 
 
+def test_replay_pending_drops_sidecar_on_4xx(api, httpx_mock, tmp_path, monkeypatch) -> None:
+    """A stale sidecar that the server rejects with 4xx must be deleted, not retried forever."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    logs_dir = tmp_path / "autoclaude" / "logs"
+    logs_dir.mkdir(parents=True)
+    file_path = logs_dir / "pending-77.ndjson"
+    file_path.write_text(
+        json.dumps(
+            {
+                "client_seq": 1,
+                "level": "info",
+                "source": "cli",
+                "message": "stale",
+                "payload": {},
+                "client_ts": "2025-01-01T00:00:00Z",
+                "step_id": None,
+            },
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    # Server says the tick is gone (404). Replay must drop the file.
+    httpx_mock.add_response(
+        url="http://localhost:9/api/ac/runner/77/tick_log/",
+        method="POST",
+        status_code=404,
+        json={"detail": "Tick not found."},
+    )
+    # The doc-protocol may follow up with a docs fetch; serve an empty response.
+    httpx_mock.add_response(
+        url="http://localhost:9/docs/api/ac/runner/tick_log/",
+        method="GET",
+        status_code=404,
+        is_optional=True,
+    )
+
+    replayed = replay_pending(api)
+    assert replayed == 0  # 4xx is not counted as a replay
+    assert not file_path.exists(), "sidecar should be dropped on irrecoverable 4xx"
+
+
 def test_handler_attaches_as_logging_handler(api, httpx_mock, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     captured: list[dict[str, Any]] = []

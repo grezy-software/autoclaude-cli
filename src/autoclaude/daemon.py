@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import signal
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from autoclaude.api_client import ApiError
 from autoclaude.installation import InstallationIdentity, get_or_create_identity
 from autoclaude.logger import get_logger
 from autoclaude.task_handlers import TASK_HANDLERS
+from autoclaude.usage_capture import install_statusline, read_latest_usage
 
 if TYPE_CHECKING:
     from typing import Any
@@ -31,6 +33,15 @@ _log = get_logger("daemon")
 DEFAULT_INTERVAL_SECONDS = 30.0
 MIN_INTERVAL_SECONDS = 5.0
 MAX_INTERVAL_SECONDS = 600.0
+
+# Cadence at which we ship Claude Code rate_limits to the server. Every
+# 15 minutes is dense enough to draw a usable graph without spamming the
+# DB or shipping data the user already saw via /usage.
+CLAUDE_USAGE_INTERVAL_SECONDS = 15 * 60
+
+# Refuse to ship a sample older than this -- the user might not have used
+# Claude in the last day, in which case the cached value is meaningless.
+CLAUDE_USAGE_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 class Daemon:
@@ -49,6 +60,10 @@ class Daemon:
         self._interval = max(MIN_INTERVAL_SECONDS, min(interval, MAX_INTERVAL_SECONDS))
         self._identity = identity or get_or_create_identity()
         self._stop = threading.Event()
+        # Monotonic timestamp of the last successful heartbeat that included a
+        # claude_usage payload. Initialised to a sentinel that forces the next
+        # heartbeat to ship usage if any sample is available.
+        self._last_usage_sent_at: float = 0.0
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -59,6 +74,8 @@ class Daemon:
         Returns cleanly so the calling command can exit zero on graceful
         shutdown (e.g. SIGTERM from launchd).
         """
+        statusline_state = install_statusline()
+        _log.info("claude statusline install: %s", statusline_state, extra={"source": "cli"})
         _log.info(
             "daemon starting (installation=%s host=%s os=%s interval=%ss)",
             self._identity.installation_id,
@@ -74,16 +91,20 @@ class Daemon:
         _log.info("daemon stopped", extra={"source": "cli"})
 
     def _tick_once(self) -> None:
+        claude_usage = self._maybe_collect_claude_usage()
         try:
             response = self._client.heartbeat(
                 installation_id=self._identity.installation_id,
                 hostname=self._identity.hostname,
                 os_platform=self._identity.os_platform,
                 cli_version=self._cli_version,
+                claude_usage=claude_usage,
             )
         except ApiError as exc:
             _log.warning("heartbeat failed: %s", exc, extra={"source": "cli"})
             return
+        if claude_usage is not None:
+            self._last_usage_sent_at = time.monotonic()
 
         next_interval = response.get("next_heartbeat_in_seconds") if isinstance(response, dict) else None
         if isinstance(next_interval, (int, float)) and next_interval > 0:
@@ -95,6 +116,18 @@ class Daemon:
                 if not isinstance(task, dict):
                     continue
                 self._dispatch_task(task)
+
+    def _maybe_collect_claude_usage(self) -> dict | None:
+        """Read the latest cached rate_limits sample if it's our turn to ship.
+
+        Throttles to ``CLAUDE_USAGE_INTERVAL_SECONDS`` so a 30-second daemon
+        cadence does not flood the server with duplicate rows. Returns None
+        when the sample is missing, stale, or we sent one recently.
+        """
+        elapsed = time.monotonic() - self._last_usage_sent_at
+        if self._last_usage_sent_at > 0 and elapsed < CLAUDE_USAGE_INTERVAL_SECONDS:
+            return None
+        return read_latest_usage(max_age_seconds=CLAUDE_USAGE_MAX_AGE_SECONDS)
 
     def _dispatch_task(self, task: dict[str, Any]) -> None:
         task_id = task.get("id")

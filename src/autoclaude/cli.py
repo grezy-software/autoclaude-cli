@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json as _json
 import shutil
 import webbrowser
 from pathlib import Path
@@ -347,6 +348,113 @@ def uninstall_daemon() -> None:
         _log.error("[red]uninstall failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
     _log.info("[green]daemon removed[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+task_app = typer.Typer(
+    add_completion=False,
+    help="Create user-actionable Tasks from inside an agent run.",
+)
+app.add_typer(task_app, name="task")
+
+
+@task_app.command("create")
+def task_create(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
+    kind: Annotated[str, typer.Option("--kind", help="Task kind slug (e.g. issuer_review_comment).")] = "",
+    title: Annotated[str, typer.Option("--title", help="One-line summary shown in the dashboard.")] = "",
+    body: Annotated[str, typer.Option("--body", help="Optional longer description.")] = "",
+    action_url: Annotated[str, typer.Option("--action-url", help="Where the user goes to act on this task.")] = "",
+    payload_json: Annotated[
+        str,
+        typer.Option("--payload-json", help="Optional JSON payload with arbitrary context."),
+    ] = "",
+    source: Annotated[str, typer.Option("--source", help="Free-form source slug (e.g. issuer).")] = "",
+    dedupe_key: Annotated[
+        str,
+        typer.Option(
+            "--dedupe-key",
+            help="Stable key (e.g. issuer:issue:42); a non-terminal task with the same key is refreshed in place.",
+        ),
+    ] = "",
+    team_id: Annotated[
+        int | None,
+        typer.Option("--team-id", help="Team to attach the task to. Defaults to the active project's team."),
+    ] = None,
+    project_id: Annotated[
+        int | None,
+        typer.Option("--project-id", help="Project to attach the task to. Defaults to the active project."),
+    ] = None,
+) -> None:
+    """POST a user-actionable Task to the AutoClaude server.
+
+    Reads the active profile for credentials and resolves ``team_id`` /
+    ``project_id`` from ``/api/ac/runner/context/`` when not supplied.
+    """
+    if not kind:
+        msg = "--kind is required."
+        raise typer.BadParameter(msg)
+    if not title:
+        msg = "--title is required."
+        raise typer.BadParameter(msg)
+
+    payload: dict | None = None
+    if payload_json:
+        try:
+            payload = _json.loads(payload_json)
+        except _json.JSONDecodeError as exc:
+            msg = f"--payload-json must be valid JSON: {exc}"
+            raise typer.BadParameter(msg) from exc
+        if not isinstance(payload, dict):
+            msg = "--payload-json must decode to a JSON object."
+            raise typer.BadParameter(msg)
+
+    _cfg, prof = _load(ctx, profile)
+    try:
+        with ApiClient(prof, cli_version=__version__) as client:
+            resolved_team_id = team_id
+            resolved_project_id = project_id
+            if resolved_team_id is None or resolved_project_id is None:
+                api_ctx = client.context()
+                if resolved_team_id is None:
+                    team = api_ctx.get("team") or {}
+                    if team.get("id") is None:
+                        _log.error(
+                            "[red]no team_id resolved[/red]: pass --team-id or set up a project first.",
+                            extra={"source": "cli"},
+                        )
+                        raise typer.Exit(code=1)
+                    resolved_team_id = int(team["id"])
+                if resolved_project_id is None:
+                    project = api_ctx.get("project") or {}
+                    if project.get("id") is not None:
+                        resolved_project_id = int(project["id"])
+
+            response = client.create_task(
+                team_id=resolved_team_id,
+                kind=kind,
+                title=title,
+                body=body,
+                action_url=action_url,
+                payload=payload,
+                source=source,
+                dedupe_key=dedupe_key,
+                project_id=resolved_project_id,
+            )
+    except ApiError as exc:
+        _log.error("[red]task create failed[/red]: %s", exc, extra={"source": "cli"})
+        if exc.payload:
+            _log.info("response: %s", exc.payload, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+
+    task_id = response.get("id")
+    _log.info(
+        "[green]task created[/green] id=%s status=%s",
+        task_id,
+        response.get("status"),
+        extra={"source": "cli"},
+    )
+    typer.echo(str(task_id))
 
 
 @app.command(name="daemon-status")

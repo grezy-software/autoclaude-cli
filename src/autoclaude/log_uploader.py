@@ -256,7 +256,14 @@ def replay_pending(api_client: ApiClient) -> int:
     Called once on CLI startup (or before opening a new tick) to flush
     logs that were captured but never acknowledged by the backend.
     Returns the number of files successfully replayed and removed.
+
+    4xx responses are treated as irrecoverable and the sidecar is dropped:
+    the tick is gone, zombie-grace expired, or the schema drifted. Keeping
+    such files would force every future replay to retry the same dead
+    payload (the 400/404/409 burst the user kept seeing in the logs).
     """
+    from autoclaude.api_client import ApiError  # noqa: PLC0415 (avoid circular import)
+
     directory = log_dir()
     if not directory.exists():
         return 0
@@ -277,14 +284,27 @@ def replay_pending(api_client: ApiClient) -> int:
         if not entries:
             path.unlink(missing_ok=True)
             continue
+        irrecoverable = False
         try:
             for i in range(0, len(entries), _DEFAULT_BATCH_SIZE):
                 api_client.post_tick_logs(tick_id, entries[i : i + _DEFAULT_BATCH_SIZE])
+        except ApiError as exc:
+            if exc.status_code is not None and 400 <= exc.status_code < 500:
+                log.info(
+                    "replay of %s rejected (%s); dropping sidecar",
+                    path,
+                    exc.status_code,
+                )
+                irrecoverable = True
+            else:
+                log.debug("replay of %s failed (%s); keeping file for next run", path, exc)
+                continue
         except Exception as exc:  # noqa: BLE001
             log.debug("replay of %s failed (%s); keeping file for next run", path, exc)
             continue
         path.unlink(missing_ok=True)
-        replayed += 1
+        if not irrecoverable:
+            replayed += 1
     return replayed
 
 
