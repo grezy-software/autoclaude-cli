@@ -123,6 +123,46 @@ def repo_exists(repo: str) -> bool:
     return result.returncode == 0
 
 
+def pr_create(
+    *,
+    base: str,
+    head: str,
+    cwd: Path,
+    title: str | None = None,
+    body: str | None = None,
+) -> str:
+    """Open a pull request from ``head`` into ``base`` and return its URL.
+
+    Uses ``--fill`` (commit subject/body) when no explicit title is given.
+    Run from inside the repo checkout so ``gh`` resolves the correct repo.
+    """
+    args = ["pr", "create", "--base", base, "--head", head]
+    if title:
+        args += ["--title", title, "--body", body or ""]
+    else:
+        args.append("--fill")
+    result = gh(args, cwd=cwd)
+    return result.stdout.strip()
+
+
+def pr_merge(
+    *,
+    pr_url: str,
+    cwd: Path,
+    method: str = "squash",
+    delete_branch: bool = True,
+) -> None:
+    """Merge ``pr_url`` and optionally delete the head branch.
+
+    ``method`` picks the merge strategy flag (``squash``/``merge``/``rebase``).
+    Run from inside the repo checkout so ``gh`` resolves the correct repo.
+    """
+    args = ["pr", "merge", pr_url, f"--{method}"]
+    if delete_branch:
+        args.append("--delete-branch")
+    gh(args, cwd=cwd)
+
+
 def repo_create(repo: str, *, private: bool = True) -> None:
     """Create ``<owner>/<name>`` on GitHub via ``gh repo create``.
 
@@ -143,6 +183,8 @@ __all__ = [
     "gh",
     "is_authenticated",
     "is_installed",
+    "pr_create",
+    "pr_merge",
     "repo_create",
     "repo_exists",
 ]
