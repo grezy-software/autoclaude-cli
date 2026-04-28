@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.20.0...v1.20.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **stats:** use display_name for custom agent step name ([bd853f2](https://github.com/grezy-software/autoclaude-cli/commit/bd853f202449bbb40f284f565f1ebfaf32e0f8c6))
+
 # [1.20.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.19.0...v1.20.0) (2026-04-28)
 
 
