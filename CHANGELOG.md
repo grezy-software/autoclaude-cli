@@ -1,3 +1,10 @@
+## [1.17.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.17.0...v1.17.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **services:** bake user PATH into launchd/systemd units ([b21c58b](https://github.com/grezy-software/autoclaude-cli/commit/b21c58b2f62d6e39b0728228bf992099852841ad))
+
 # [1.17.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.16.0...v1.17.0) (2026-04-28)
 
 
