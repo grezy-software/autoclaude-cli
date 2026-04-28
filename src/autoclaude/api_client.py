@@ -543,7 +543,13 @@ def _strip_host(path_or_url: str) -> str:
 
 
 def _extract_request_body(request: httpx.Request) -> Any:
-    body = request.content
+    try:
+        body = request.content
+    except httpx.RequestNotRead:
+        try:
+            body = request.read()
+        except Exception:  # noqa: BLE001
+            return None
     if not body:
         return None
     try:
