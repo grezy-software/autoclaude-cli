@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.15.0...v1.16.0) (2026-04-28)
+
+
+### Features
+
+* **services:** split daemon into heartbeat + scheduler with pause/play ([88f40f6](https://github.com/grezy-software/autoclaude-cli/commit/88f40f68072405883ec0a5e68de70162d9568d63))
+
 # [1.15.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.14.0...v1.15.0) (2026-04-28)
 
 
