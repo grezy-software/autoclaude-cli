@@ -1,3 +1,11 @@
+# [1.20.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.19.0...v1.20.0) (2026-04-28)
+
+
+### Features
+
+* **tick-archive:** keep tick logs 7 days, harden file lookups ([c03efdd](https://github.com/grezy-software/autoclaude-cli/commit/c03efdd89f0b598a6d04dd7d2e87d44d04488f78))
+* **update-check:** surface daemon-recorded version notice in CLI ([e4eba25](https://github.com/grezy-software/autoclaude-cli/commit/e4eba25ae87d02380f3350558371cbe39403ffe3))
+
 # [1.19.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.18.1...v1.19.0) (2026-04-28)
 
 
