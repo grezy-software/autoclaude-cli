@@ -410,6 +410,95 @@ def install_services(ctx: typer.Context, profile: ProfileOption = None) -> None:
         _log.info("[green]installed[/green] (%s)", result.detail, extra={"source": "cli"})
 
 
+_LOG_KIND_CHOICES = ("scheduler", "heartbeat", "all")
+
+
+@app.command()
+def logs(
+    kind: Annotated[
+        str,
+        typer.Option(
+            "--kind",
+            "-k",
+            help="Which log to read: scheduler, heartbeat, or all (interleaved).",
+            case_sensitive=False,
+        ),
+    ] = "scheduler",
+    lines: Annotated[
+        int,
+        typer.Option("--lines", "-n", help="Show the last N lines before tailing."),
+    ] = 100,
+    follow: Annotated[
+        bool,
+        typer.Option("--follow/--no-follow", "-f", help="Tail the log (Ctrl+C to stop)."),
+    ] = True,
+    stream: Annotated[
+        str,
+        typer.Option(
+            "--stream",
+            "-s",
+            help="Which file to tail: stdout (.out.log) or stderr (.err.log).",
+            case_sensitive=False,
+        ),
+    ] = "stdout",
+) -> None:
+    """Tail the heartbeat / scheduler service logs.
+
+    The launchd / systemd / Task Scheduler unit writes ``stdout`` and
+    ``stderr`` to ``~/.config/autoclaude/logs/<kind>.{out,err}.log``.
+    Defaults: scheduler stdout, last 100 lines, follow.
+    """
+    import subprocess
+
+    kind_value = kind.lower().strip()
+    if kind_value not in _LOG_KIND_CHOICES:
+        _log.error(
+            "[red]invalid --kind %r[/red]; pick one of: %s",
+            kind,
+            ", ".join(_LOG_KIND_CHOICES),
+            extra={"source": "cli"},
+        )
+        raise typer.Exit(code=1)
+    stream_value = stream.lower().strip()
+    if stream_value not in {"stdout", "stderr"}:
+        _log.error(
+            "[red]invalid --stream %r[/red]; pick one of: stdout, stderr",
+            stream,
+            extra={"source": "cli"},
+        )
+        raise typer.Exit(code=1)
+    suffix = "out.log" if stream_value == "stdout" else "err.log"
+    log_dir = Path.home() / ".config" / "autoclaude" / "logs"
+    if kind_value == "all":
+        targets = [log_dir / f"scheduler.{suffix}", log_dir / f"heartbeat.{suffix}"]
+    else:
+        targets = [log_dir / f"{kind_value}.{suffix}"]
+    missing = [str(p) for p in targets if not p.exists()]
+    if missing:
+        _log.warning(
+            "[yellow]log file(s) missing[/yellow]: %s. The service may not have run yet.",
+            ", ".join(missing),
+            extra={"source": "cli"},
+        )
+        existing = [p for p in targets if p.exists()]
+        if not existing:
+            raise typer.Exit(code=1)
+        targets = existing
+
+    tail_bin = shutil.which("tail")
+    if tail_bin is None:
+        _log.error("[red]`tail` not found on PATH[/red].", extra={"source": "cli"})
+        raise typer.Exit(code=1)
+    cmd = [tail_bin, "-n", str(max(0, lines))]
+    if follow:
+        cmd.append("-F")
+    cmd.extend(str(p) for p in targets)
+    try:
+        subprocess.run(cmd, check=False)
+    except KeyboardInterrupt:
+        pass
+
+
 @app.command(name="uninstall-services")
 def uninstall_services() -> None:
     """Remove heartbeat + scheduler services."""
