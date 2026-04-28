@@ -103,6 +103,37 @@ def _macos_plist_path(kind: ServiceKind) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{_label(kind)}.plist"
 
 
+def _service_path() -> str:
+    """PATH baked into launchd/systemd units so ``gh``/``claude``/``git`` resolve.
+
+    launchd inherits a minimal PATH that excludes Homebrew and ``~/.local/bin``,
+    so binaries the runner depends on are not found unless we declare them
+    explicitly. The user's interactive PATH is captured at install time and
+    extended with the well-known fallbacks.
+    """
+    pieces: list[str] = []
+    seen: set[str] = set()
+    extras = [
+        os.environ.get("PATH", ""),
+        f"{Path.home()}/.local/bin",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ]
+    for part in extras:
+        for entry in (part or "").split(":"):
+            entry = entry.strip()
+            if not entry or entry in seen:
+                continue
+            seen.add(entry)
+            pieces.append(entry)
+    return ":".join(pieces)
+
+
 def _macos_plist(binary: str, profile: str, kind: ServiceKind) -> str:
     label = _label(kind)
     subcommand = _service_subcommand(kind)
@@ -121,6 +152,13 @@ def _macos_plist(binary: str, profile: str, kind: ServiceKind) -> str:
     <array>
 {program_args}
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{_service_path()}</string>
+        <key>HOME</key>
+        <string>{Path.home()}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -206,6 +244,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment=PATH={_service_path()}
 ExecStart={binary} {subcommand} --profile {profile}
 Restart=on-failure
 RestartSec=10
