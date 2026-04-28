@@ -44,7 +44,6 @@ import re
 import shutil
 import tempfile
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,8 +52,6 @@ from typing import TYPE_CHECKING, Any
 from filelock import FileLock
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from autoclaude.repo_config import Retention
 
 ROOT_NAME = ".autoclaude"
@@ -85,7 +82,6 @@ ATTEMPTS_FILE = "attempts.json"
 ATTEMPTS_LOCK = "attempts.json.lock"
 LAST_TICK_FILE = "last_tick.json"
 HISTORY_FILE = "history.ndjson"
-TICK_LOCK_FILE = "tick.lock"
 TOOL_HASHES_FILE = "tool_hashes.json"
 
 _SUBDIRS = (
@@ -279,10 +275,6 @@ class RepoStorage:
         return self.logs_dir / HISTORY_FILE
 
     @property
-    def tick_lock_path(self) -> Path:
-        return self.locks_dir / TICK_LOCK_FILE
-
-    @property
     def tool_hashes_path(self) -> Path:
         return self.state_dir / TOOL_HASHES_FILE
 
@@ -358,10 +350,6 @@ class RepoStorage:
     def state_lock(self) -> FileLock:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         return FileLock(str(self.attempts_lock_path))
-
-    def tick_lock(self) -> FileLock:
-        self.locks_dir.mkdir(parents=True, exist_ok=True)
-        return FileLock(str(self.tick_lock_path))
 
     def write_last_tick(self, summary: dict[str, Any]) -> None:
         atomic_write_json(self.last_tick_path, summary)
@@ -549,14 +537,6 @@ class RepoStorage:
                     continue
 
 
-@contextmanager
-def acquired_tick_lock(storage: RepoStorage, *, timeout: float = 0.0) -> Iterator[None]:
-    """Acquire the repo-wide tick lock. Raises ``Timeout`` from filelock on contention."""
-    lock = storage.tick_lock()
-    with lock.acquire(timeout=timeout):
-        yield
-
-
 __all__ = [
     "ATTEMPTS_FILE",
     "ATTEMPTS_LOCK",
@@ -573,13 +553,11 @@ __all__ = [
     "ROOT_NAME",
     "SCHEMA_VERSION",
     "STATE_DIRNAME",
-    "TICK_LOCK_FILE",
     "TMP_DIRNAME",
     "TOOLS_DIRNAME",
     "InvalidToolSlugError",
     "Meta",
     "RepoStorage",
-    "acquired_tick_lock",
     "atomic_write_bytes",
     "atomic_write_json",
     "atomic_write_text",

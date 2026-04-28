@@ -18,8 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from filelock import Timeout
-
 from autoclaude import __version__
 from autoclaude import gh as gh_helpers
 from autoclaude import repo_config as repo_config_mod
@@ -67,6 +65,7 @@ STEP_STORAGE_PREP = "storage_prep"
 STEP_TOOL_RECONCILE = "tool_reconcile"
 STEP_WORKSPACE_PREP = "workspace_prep"
 STEP_BRANCH_PUSH = "branch_push"
+STEP_PR_OPEN = "pr_open"
 STEP_FINALIZE = "finalize"
 STEP_WORKSPACE_CLEANUP = "workspace_cleanup"
 STEP_LOG_FLUSH = "log_flush"
@@ -77,6 +76,10 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_TOKEN_EXHAUSTED = 3
 EXIT_ABANDONED = 130
+# Server returned 409 on tick_open: the user already holds a live tick, or
+# the picked Job is mid-tick on another runner. Concurrency is enforced
+# server-side; the CLI just exits cleanly so cron / launchd retries land on
+# the next eligible window.
 EXIT_LOCKED = 4
 
 
@@ -108,6 +111,7 @@ class _TickState:
     # Set after the branch_push cleanup step succeeds; surfaced in the tick
     # outcome so operators can click through to the changes.
     branch_url: str = ""
+    pr_url: str = ""
 
 
 def _utcnow() -> datetime:
@@ -693,7 +697,7 @@ def _cleanup_worktree(workspace: Workspace, worktree: Worktree, *, tick_id: int 
         _log.warning("worktree cleanup failed: %s", exc, extra={"source": "cli"})
 
 
-def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace] | None = None) -> int:  # noqa: PLR0911 (exit-code dispatch)
+def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace] | None = None) -> int:
     """Fire one tick against the project's GitHub repo using an isolated worktree.
 
     The workspace is built from ``project.github_repo`` returned by the
@@ -776,24 +780,10 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
         ),
     )
 
-    tick_lock = storage.tick_lock()
-    try:
-        tick_lock.acquire(timeout=0.0)
-    except Timeout:
-        _log.error(
-            "[red]another autoclaude tick is already running for %s[/red]",
-            workspace.clone_path,
-            extra={"source": "cli"},
-        )
-        return EXIT_LOCKED
-
-    try:
-        return _run_tick_locked(client, ctx=ctx, workspace=workspace, storage=storage, pending=pending)
-    finally:
-        tick_lock.release()
+    return _run_tick_body(client, ctx=ctx, workspace=workspace, storage=storage, pending=pending)
 
 
-def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
+def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
     client: ApiClient,
     *,
     ctx: dict[str, Any],
@@ -832,6 +822,14 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 extra={"source": "cli"},
             )
             return EXIT_OK
+        if exc.status_code == 409:
+            payload = exc.payload if isinstance(exc.payload, dict) else {}
+            _log.info(
+                "[dim]tick skipped[/dim]: %s",
+                payload.get("reason") or payload.get("code") or "another tick already running",
+                extra={"source": "cli"},
+            )
+            return EXIT_LOCKED
         _log.error("[red]tick open failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
 
@@ -858,6 +856,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
 
     base_branch_input = str(plan.get("base_branch") or "").strip()
     base_ref = f"origin/{base_branch_input}" if base_branch_input else "HEAD"
+    auto_merge = bool(plan.get("auto_merge"))
 
     def _do_worktree() -> str:
         nonlocal worktree
@@ -944,6 +943,52 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 work=_do_branch_push,
             )
 
+            def _do_pr_open() -> str:
+                # Open a PR from the worktree branch back into the tick's base
+                # branch. Best-effort: skip when no base is declared (nothing
+                # sensible to target) or when there are no commits ahead of
+                # base (gh would error). A failed PR open must not flip the
+                # tick to failed -- the work is already pushed.
+                if not base_branch_input:
+                    return "skipped: no base_branch declared"
+                if not state.branch_url:
+                    return "skipped: branch_url unset (push did not succeed)"
+                try:
+                    pr_url = gh_helpers.pr_create(
+                        base=base_branch_input,
+                        head=worktree.branch,
+                        cwd=worktree.path,
+                    )
+                except GhError as exc:
+                    return f"skipped: {exc}"
+                state.pr_url = pr_url
+                outcome = f"opened PR {worktree.branch} -> {base_branch_input}: {pr_url}"
+                if auto_merge:
+                    try:
+                        gh_helpers.pr_merge(
+                            pr_url=pr_url,
+                            cwd=worktree.path,
+                            method="squash",
+                            delete_branch=True,
+                        )
+                    except GhError as exc:
+                        return f"{outcome}; merge skipped: {exc}"
+                    outcome += " (merged + branch deleted)"
+                return outcome
+
+            _run_lifecycle_step(
+                client,
+                tick_id=state.tick_id,
+                kind=KIND_CLEANUP,
+                name=STEP_PR_OPEN,
+                ordinal=cleanup_base + 1,
+                action=(
+                    f"gh pr create --base {base_branch_input} --head {worktree.branch} --fill"
+                    + (" && gh pr merge --squash --delete-branch" if auto_merge else "")
+                ),
+                work=_do_pr_open,
+            )
+
             def _do_finalize() -> str:
                 # Upload the file-tree snapshot before closing so the dashboard
                 # always has a layout for the terminal tick. Failures here are
@@ -958,6 +1003,8 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 outcome_lines = list(state.outcomes)
                 if state.branch_url:
                     outcome_lines.append(f"branch: {state.branch_url}")
+                if state.pr_url:
+                    outcome_lines.append(f"pr: {state.pr_url}")
                 client.close_tick(
                     state.tick_id,
                     status=state.status,
@@ -974,7 +1021,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_FINALIZE,
-                ordinal=cleanup_base + 1,
+                ordinal=cleanup_base + 2,
                 action="close_tick + write last_tick.json + summary.json",
                 work=_do_finalize,
             )
@@ -990,7 +1037,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_WORKSPACE_CLEANUP,
-                ordinal=cleanup_base + 2,
+                ordinal=cleanup_base + 3,
                 action=f"workspace.remove_worktree({worktree.path})",
                 work=_do_workspace_cleanup,
             )
@@ -1004,7 +1051,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 tick_id=state.tick_id,
                 kind=KIND_CLEANUP,
                 name=STEP_LOG_FLUSH,
-                ordinal=cleanup_base + 3,
+                ordinal=cleanup_base + 4,
                 action=f"TickLogger.flush(timeout={_LOG_FLUSH_TIMEOUT})",
                 work=_do_log_flush,
             )

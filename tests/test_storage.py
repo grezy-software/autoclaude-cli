@@ -121,19 +121,6 @@ def test_write_and_read_last_tick(tmp_path: Path) -> None:
     assert storage.read_last_tick() == payload
 
 
-def test_tick_lock_contended(tmp_path: Path) -> None:
-    storage = RepoStorage.from_repo(tmp_path)
-    storage.ensure()
-    first = storage.tick_lock()
-    first.acquire(timeout=0.0)
-    try:
-        second = storage.tick_lock()
-        with pytest.raises(Timeout):
-            second.acquire(timeout=0.0)
-    finally:
-        first.release()
-
-
 def test_prune_removes_old_log_ticks(tmp_path: Path) -> None:
     storage = RepoStorage.from_repo(tmp_path)
     storage.ensure()
