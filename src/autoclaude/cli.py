@@ -39,7 +39,23 @@ from autoclaude.service_install import (
     uninstall_all,
 )
 from autoclaude.storage import RepoStorage
+from autoclaude.update_check import (
+    UPGRADE_HINT,
+)
+from autoclaude.update_check import (
+    clear_state as update_clear_state,
+)
+from autoclaude.update_check import (
+    load_status as update_load_status,
+)
+from autoclaude.update_check import (
+    state_path as update_state_path,
+)
 from autoclaude.workspace import workspace_home
+
+# Commands that must keep working even when the persisted state says we are
+# below ``min_version`` -- they are how the user diagnoses and recovers.
+_BLOCKING_EXEMPT_COMMANDS = frozenset({"version", "update-check", "uninstall-services", "services"})
 
 CLAUDE_BILLING_URL = "https://console.anthropic.com/settings/plans"
 
@@ -88,6 +104,35 @@ def _main(
 ) -> None:
     """Shared options. `--profile` works here or on any subcommand."""
     ctx.obj = {"profile": profile}
+    _surface_update_status(ctx)
+
+
+def _surface_update_status(ctx: typer.Context) -> None:
+    """Render the daemon-recorded version notice (or block) before the command runs.
+
+    The daemon writes ``update_check.json`` on every heartbeat; foreground
+    commands read it without making their own network call. Blocking exits
+    early with code 2 unless the user is running a recovery command.
+    """
+    status = update_load_status()
+    invoked = (ctx.invoked_subcommand or "").lower()
+    if status.blocking and invoked not in _BLOCKING_EXEMPT_COMMANDS:
+        _log.error(
+            "[red]autoclaude %s is below required minimum %s.[/red] Run: [bold]%s[/bold]",
+            status.current,
+            status.minimum,
+            UPGRADE_HINT,
+            extra={"source": "cli"},
+        )
+        raise typer.Exit(code=2)
+    if status.outdated:
+        _log.info(
+            "[yellow]update available[/yellow]: %s -> %s. Run: [bold]%s[/bold]",
+            status.current,
+            status.latest,
+            UPGRADE_HINT,
+            extra={"source": "cli"},
+        )
 
 
 def _load(ctx: typer.Context, profile_flag: str | None) -> tuple[Config, Profile]:
@@ -341,6 +386,48 @@ def init(
 def version() -> None:
     """Print the package version."""
     _log.info("%s", __version__, extra={"source": "cli"})
+
+
+@app.command(name="update-check")
+def update_check_cmd(
+    clear: Annotated[  # noqa: FBT002 (Typer option)
+        bool,
+        typer.Option("--clear", help="Wipe the persisted update_check.json and exit."),
+    ] = False,
+) -> None:
+    """Inspect the daemon-recorded update status (or clear it).
+
+    The daemon writes ``$XDG_CONFIG_HOME/autoclaude/update_check.json`` on
+    every heartbeat; this command surfaces the contents so a developer can
+    confirm the upgrade-notice plumbing without tailing the daemon log.
+    Combine with ``AUTOCLAUDE_FORCE_LATEST=2.0.0 AUTOCLAUDE_FORCE_MIN=1.0.0``
+    when running ``autoclaude daemon`` locally to rehearse the flow.
+    """
+    if clear:
+        removed = update_clear_state()
+        if removed:
+            _log.info("[green]cleared[/green] %s", update_state_path(), extra={"source": "cli"})
+        else:
+            _log.info("[dim]no state file at %s[/dim]", update_state_path(), extra={"source": "cli"})
+        return
+    status = update_load_status()
+    _log.info("state file: %s", update_state_path(), extra={"source": "cli"})
+    _log.info(
+        "current=%s latest=%s min=%s outdated=%s blocking=%s",
+        status.current,
+        status.latest or "[dim]unknown[/dim]",
+        status.minimum or "[dim]unknown[/dim]",
+        status.outdated,
+        status.blocking,
+        extra={"source": "cli"},
+    )
+    if status.state.checked_at:
+        _log.info("last heartbeat at: %s", status.state.checked_at, extra={"source": "cli"})
+    else:
+        _log.info(
+            "[dim]no heartbeat recorded yet -- start the daemon with `autoclaude daemon`[/dim]",
+            extra={"source": "cli"},
+        )
 
 
 @app.command()
