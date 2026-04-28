@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.13.1...v1.14.0) (2026-04-28)
+
+
+### Features
+
+* **runner:** fork tick worktrees from plan.base_branch ([a1d89ee](https://github.com/grezy-software/autoclaude-cli/commit/a1d89ee0425d9adf2b0b414556725ac1816d0f16))
+
 ## [1.13.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.13.0...v1.13.1) (2026-04-28)
 
 
