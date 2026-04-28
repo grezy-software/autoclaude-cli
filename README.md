@@ -62,6 +62,13 @@ autoclaude --profile staging tick
 AUTOCLAUDE_PROFILE=staging autoclaude tick
 ```
 
+List configured profiles and switch the active one persistently:
+
+```bash
+autoclaude profiles          # list profiles, * marks active
+autoclaude use staging       # set active profile (persists in config.toml)
+```
+
 `--url` accepts `localhost:3001` (http is assumed) or a full `https://…` URL. Override at runtime with `AUTOCLAUDE_URL` / `AUTOCLAUDE_API_KEY`.
 
 ## How it works

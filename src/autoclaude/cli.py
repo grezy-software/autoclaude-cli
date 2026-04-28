@@ -133,6 +133,36 @@ def login(
 
 
 @app.command()
+def use(name: str) -> None:
+    """Set the active profile written to the config file."""
+    cfg = Config.load()
+    if name not in cfg.profiles:
+        _log.error(
+            "[red]unknown profile %r[/red]; known: %s",
+            name,
+            ", ".join(sorted(cfg.profiles)) or "[dim]none[/dim]",
+            extra={"source": "cli"},
+        )
+        raise typer.Exit(code=1)
+    cfg.active = name
+    cfg.save()
+    prof = cfg.profiles[name]
+    _log.info("[green]active profile -> %s[/green] (%s)", name, prof.url or "[dim]no url[/dim]", extra={"source": "cli"})
+
+
+@app.command(name="profiles")
+def profiles_list() -> None:
+    """List configured profiles, marking the active one."""
+    cfg = Config.load()
+    if not cfg.profiles:
+        _log.warning("[yellow]no profiles configured[/yellow]; run `autoclaude login`.", extra={"source": "cli"})
+        return
+    for name, prof in sorted(cfg.profiles.items()):
+        marker = "*" if name == cfg.active else " "
+        _log.info("%s %s -> %s", marker, name, prof.url or "[dim]no url[/dim]", extra={"source": "cli"})
+
+
+@app.command()
 def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Verify config, claude CLI, gh auth, repo checkout."""
     _cfg, prof = _load(ctx, profile)
@@ -385,6 +415,13 @@ def task_create(
         int | None,
         typer.Option("--project-id", help="Project to attach the task to. Defaults to the active project."),
     ] = None,
+    is_blocking: Annotated[
+        bool,
+        typer.Option(
+            "--is-blocking/--no-is-blocking",
+            help="Mark this task as blocking: the parent Job is skipped in the round-robin until the task is resolved.",
+        ),
+    ] = False,
 ) -> None:
     """POST a user-actionable Task to the AutoClaude server.
 
@@ -440,6 +477,7 @@ def task_create(
                 source=source,
                 dedupe_key=dedupe_key,
                 project_id=resolved_project_id,
+                is_blocking=is_blocking,
             )
     except ApiError as exc:
         _log.error("[red]task create failed[/red]: %s", exc, extra={"source": "cli"})
