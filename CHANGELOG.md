@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.18.1...v1.19.0) (2026-04-28)
+
+
+### Features
+
+* **logger:** show timestamps on stdout ([2e7e092](https://github.com/grezy-software/autoclaude-cli/commit/2e7e092f6859237dd0af628495068a1e3ea36f21))
+
 ## [1.18.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.18.0...v1.18.1) (2026-04-28)
 
 
