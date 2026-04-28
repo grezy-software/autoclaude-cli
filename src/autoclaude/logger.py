@@ -49,9 +49,11 @@ def _build_rich_handler() -> RichHandler:
     handler = RichHandler(
         rich_tracebacks=True,
         markup=True,
-        show_time=False,
+        show_time=True,
+        omit_repeated_times=False,
         show_path=False,
         show_level=True,
+        log_time_format="[%Y-%m-%d %H:%M:%S]",
     )
     handler.setLevel(logging.INFO)
     return handler
