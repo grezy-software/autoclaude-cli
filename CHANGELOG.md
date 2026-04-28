@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.17.1...v1.18.0) (2026-04-28)
+
+
+### Features
+
+* **cli:** add `autoclaude logs` to tail heartbeat/scheduler service logs ([93c7f40](https://github.com/grezy-software/autoclaude-cli/commit/93c7f404acb2b9a7b5eed261342b81b514af66d5))
+
 ## [1.17.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.17.0...v1.17.1) (2026-04-28)
 
 
