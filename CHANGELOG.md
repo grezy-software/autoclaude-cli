@@ -1,3 +1,10 @@
+## [1.18.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.18.0...v1.18.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **lint:** pass ruff on cli, runner, service_install, tests, usage_capture ([9c75187](https://github.com/grezy-software/autoclaude-cli/commit/9c75187c39804746c64cbf44807b0275045ae90f))
+
 # [1.18.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.17.1...v1.18.0) (2026-04-28)
 
 

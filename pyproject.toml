@@ -1,6 +1,6 @@
 [project]
 name = "autoclaude-cli"
-version = "1.18.0"
+version = "1.18.1"
 description = "Local runner for AutoClaude. Executes orchestration plans with your Claude Max/Pro subscription."
 readme = "README.md"
 requires-python = ">=3.11"
