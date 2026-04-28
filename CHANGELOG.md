@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.14.0...v1.15.0) (2026-04-28)
+
+
+### Features
+
+* **runner:** dispatch tools as their own steps after each agent ([630eac4](https://github.com/grezy-software/autoclaude-cli/commit/630eac4e64c48ff405665c191b1f13af35c23bfe))
+
 # [1.14.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.13.1...v1.14.0) (2026-04-28)
 
 
