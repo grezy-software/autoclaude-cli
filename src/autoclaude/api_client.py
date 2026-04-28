@@ -486,6 +486,7 @@ class ApiClient:
         project_id: int | None = None,
         tick_id: int | None = None,
         user_id: int | None = None,
+        is_blocking: bool = False,
     ) -> dict[str, Any]:
         """Create (or refresh) a user-actionable Task on the server.
 
@@ -514,6 +515,8 @@ class ApiClient:
             json_body["tick_id"] = int(tick_id)
         if user_id is not None:
             json_body["user_id"] = int(user_id)
+        if is_blocking:
+            json_body["is_blocking"] = True
         return self._attempt(
             "POST",
             "/api/ac/task/",

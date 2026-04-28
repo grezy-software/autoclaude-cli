@@ -661,10 +661,13 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
     # workspace_prep is the first post-tick-open setup phase.
     worktree: Worktree | None = None
 
+    base_branch_input = str(plan.get("base_branch") or "").strip()
+    base_ref = f"origin/{base_branch_input}" if base_branch_input else "HEAD"
+
     def _do_worktree() -> str:
         nonlocal worktree
-        worktree = workspace.create_worktree(state.tick_id)
-        return f"worktree at {worktree.path} on branch {worktree.branch}"
+        worktree = workspace.create_worktree(state.tick_id, base=base_ref)
+        return f"worktree at {worktree.path} on branch {worktree.branch} (base={base_ref})"
 
     ok, detail = _run_lifecycle_step(
         client,
@@ -672,7 +675,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
         kind=KIND_SETUP,
         name=STEP_WORKSPACE_PREP,
         ordinal=setup_count,
-        action="workspace.create_worktree(tick_id)",
+        action=f"workspace.create_worktree(tick_id, base={base_ref!r})",
         work=_do_worktree,
     )
     if not ok or worktree is None:
