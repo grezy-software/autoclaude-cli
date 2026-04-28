@@ -1,3 +1,10 @@
+# [1.13.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.12.0...v1.13.0) (2026-04-28)
+
+
+### Features
+
+* **cli:** add `use` and `profiles` commands ([4ebc6a1](https://github.com/grezy-software/autoclaude-cli/commit/4ebc6a12cc34bf2597b059f0c55b270cdc0014ea))
+
 # [1.12.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.11.0...v1.12.0) (2026-04-27)
 
 
