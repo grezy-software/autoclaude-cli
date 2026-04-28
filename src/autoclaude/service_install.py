@@ -125,8 +125,8 @@ def _service_path() -> str:
         "/sbin",
     ]
     for part in extras:
-        for entry in (part or "").split(":"):
-            entry = entry.strip()
+        for raw in (part or "").split(":"):
+            entry = raw.strip()
             if not entry or entry in seen:
                 continue
             seen.add(entry)
@@ -445,10 +445,10 @@ __all__ = [
     "HEARTBEAT_LABEL",
     "HEARTBEAT_SCHTASKS_NAME",
     "HEARTBEAT_SYSTEMD_UNIT",
-    "InstallResult",
     "SCHEDULER_LABEL",
     "SCHEDULER_SCHTASKS_NAME",
     "SCHEDULER_SYSTEMD_UNIT",
+    "InstallResult",
     "ServiceInstallError",
     "ServiceKind",
     "install_all",

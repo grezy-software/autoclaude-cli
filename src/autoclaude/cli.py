@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json as _json
 import shutil
+import subprocess
 import webbrowser
 from pathlib import Path
 from typing import Annotated
@@ -32,7 +33,6 @@ from autoclaude.scheduler import run_scheduler
 from autoclaude.service_install import (
     ServiceInstallError,
     install_all,
-    install_service,
     pause_scheduler,
     play_scheduler,
     status_service,
@@ -428,7 +428,7 @@ def logs(
         int,
         typer.Option("--lines", "-n", help="Show the last N lines before tailing."),
     ] = 100,
-    follow: Annotated[
+    follow: Annotated[  # noqa: FBT002 (Typer flag, value is driven by the CLI option)
         bool,
         typer.Option("--follow/--no-follow", "-f", help="Tail the log (Ctrl+C to stop)."),
     ] = True,
@@ -448,8 +448,6 @@ def logs(
     ``stderr`` to ``~/.config/autoclaude/logs/<kind>.{out,err}.log``.
     Defaults: scheduler stdout, last 100 lines, follow.
     """
-    import subprocess
-
     kind_value = kind.lower().strip()
     if kind_value not in _LOG_KIND_CHOICES:
         _log.error(
@@ -469,10 +467,11 @@ def logs(
         raise typer.Exit(code=1)
     suffix = "out.log" if stream_value == "stdout" else "err.log"
     log_dir = Path.home() / ".config" / "autoclaude" / "logs"
-    if kind_value == "all":
-        targets = [log_dir / f"scheduler.{suffix}", log_dir / f"heartbeat.{suffix}"]
-    else:
-        targets = [log_dir / f"{kind_value}.{suffix}"]
+    targets = (
+        [log_dir / f"scheduler.{suffix}", log_dir / f"heartbeat.{suffix}"]
+        if kind_value == "all"
+        else [log_dir / f"{kind_value}.{suffix}"]
+    )
     missing = [str(p) for p in targets if not p.exists()]
     if missing:
         _log.warning(
@@ -493,10 +492,8 @@ def logs(
     if follow:
         cmd.append("-F")
     cmd.extend(str(p) for p in targets)
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         subprocess.run(cmd, check=False)
-    except KeyboardInterrupt:
-        pass
 
 
 @app.command(name="uninstall-services")

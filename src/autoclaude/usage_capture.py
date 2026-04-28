@@ -23,8 +23,8 @@ they can wire ours in manually.
 from __future__ import annotations
 
 import json
-import os
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -145,10 +145,10 @@ def _wire_settings_json() -> str:
 def _atomic_write_json(path: Path, payload: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2))
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
-def read_latest_usage(*, max_age_seconds: float | None = None) -> dict[str, Any] | None:
+def read_latest_usage(*, max_age_seconds: float | None = None) -> dict[str, Any] | None:  # noqa: PLR0911 (filter dispatch)
     """Return the most recent rate_limits sample, or None when nothing usable.
 
     ``max_age_seconds`` lets the caller filter out stale data: if the file
@@ -167,8 +167,6 @@ def read_latest_usage(*, max_age_seconds: float | None = None) -> dict[str, Any]
         captured = data.get("captured_at")
         if not isinstance(captured, (int, float)):
             return None
-        import time
-
         if time.time() - captured > max_age_seconds:
             return None
     if data.get("five_hour_pct") is None and data.get("seven_day_pct") is None:

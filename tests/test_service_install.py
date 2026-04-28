@@ -14,7 +14,6 @@ from autoclaude.service_install import (
     HEARTBEAT_SCHTASKS_NAME,
     HEARTBEAT_SYSTEMD_UNIT,
     SCHEDULER_LABEL,
-    SCHEDULER_SCHTASKS_NAME,
     SCHEDULER_SYSTEMD_UNIT,
     ServiceInstallError,
 )
@@ -30,7 +29,7 @@ def _fail(stderr: str = "boom") -> subprocess.CompletedProcess[str]:
 
 def test_install_macos_heartbeat_writes_plist_and_calls_launchctl(tmp_path: Path, monkeypatch) -> None:
     plist_path = tmp_path / "heartbeat.plist"
-    monkeypatch.setattr(service_install, "_macos_plist_path", lambda kind: plist_path)
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: plist_path)
     monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
     monkeypatch.setattr(service_install, "_resolve_autoclaude_binary", lambda: "/usr/local/bin/autoclaude")
     run_mock = MagicMock(return_value=_ok())
@@ -53,7 +52,7 @@ def test_install_macos_heartbeat_writes_plist_and_calls_launchctl(tmp_path: Path
 
 def test_install_macos_scheduler_uses_scheduler_subcommand(tmp_path: Path, monkeypatch) -> None:
     plist_path = tmp_path / "scheduler.plist"
-    monkeypatch.setattr(service_install, "_macos_plist_path", lambda kind: plist_path)
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: plist_path)
     monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
     monkeypatch.setattr(service_install, "_run", MagicMock(return_value=_ok()))
 
@@ -65,7 +64,7 @@ def test_install_macos_scheduler_uses_scheduler_subcommand(tmp_path: Path, monke
 
 
 def test_install_macos_raises_on_bootstrap_failure(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(service_install, "_macos_plist_path", lambda kind: tmp_path / "agent.plist")
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: tmp_path / "agent.plist")
     monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
     run_mock = MagicMock(side_effect=[_ok(), _ok(), _fail("Load failed")])
     monkeypatch.setattr(service_install, "_run", run_mock)
@@ -75,7 +74,7 @@ def test_install_macos_raises_on_bootstrap_failure(tmp_path: Path, monkeypatch) 
 
 def test_install_linux_writes_unit_and_enables(tmp_path: Path, monkeypatch) -> None:
     unit_path = tmp_path / HEARTBEAT_SYSTEMD_UNIT
-    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda kind: unit_path)
+    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda _kind: unit_path)
     run_mock = MagicMock(return_value=_ok())
     monkeypatch.setattr(service_install, "_run", run_mock)
 
@@ -91,7 +90,7 @@ def test_install_linux_writes_unit_and_enables(tmp_path: Path, monkeypatch) -> N
 
 def test_install_linux_scheduler_uses_scheduler_subcommand(tmp_path: Path, monkeypatch) -> None:
     unit_path = tmp_path / SCHEDULER_SYSTEMD_UNIT
-    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda kind: unit_path)
+    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda _kind: unit_path)
     monkeypatch.setattr(service_install, "_run", MagicMock(return_value=_ok()))
 
     service_install._systemd_install("scheduler", "/usr/bin/autoclaude", "default")  # noqa: SLF001
@@ -115,7 +114,7 @@ def test_install_windows_creates_scheduled_task(monkeypatch) -> None:
 def test_uninstall_macos_removes_plist_and_calls_bootout(tmp_path: Path, monkeypatch) -> None:
     plist = tmp_path / "agent.plist"
     plist.write_text("<plist/>")
-    monkeypatch.setattr(service_install, "_macos_plist_path", lambda kind: plist)
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: plist)
     monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
     run_mock = MagicMock(return_value=_ok())
     monkeypatch.setattr(service_install, "_run", run_mock)
@@ -160,7 +159,7 @@ def test_pause_scheduler_macos_disables_label(monkeypatch) -> None:
     monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
     run_mock = MagicMock(return_value=_ok())
     monkeypatch.setattr(service_install, "_run", run_mock)
-    monkeypatch.setattr(service_install, "_macos_plist_path", lambda kind: Path("/tmp/x.plist"))
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: Path("/tmp/x.plist"))  # noqa: S108 (test path, not real)
 
     service_install.pause_scheduler()
 
@@ -171,7 +170,7 @@ def test_pause_scheduler_macos_disables_label(monkeypatch) -> None:
 
 def test_play_scheduler_reinstalls(monkeypatch) -> None:
     sentinel = service_install.InstallResult(platform="t", action="installed", detail="scheduler")
-    monkeypatch.setattr(service_install, "install_service", lambda kind, profile: sentinel if kind == "scheduler" else None)
+    monkeypatch.setattr(service_install, "install_service", lambda kind, _profile: sentinel if kind == "scheduler" else None)
     assert service_install.play_scheduler("default") is sentinel
 
 
