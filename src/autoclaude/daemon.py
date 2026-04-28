@@ -21,6 +21,8 @@ from autoclaude.api_client import ApiError
 from autoclaude.installation import InstallationIdentity, get_or_create_identity
 from autoclaude.logger import get_logger
 from autoclaude.task_handlers import TASK_HANDLERS
+from autoclaude.tick_archive import purge_expired
+from autoclaude.update_check import apply_heartbeat_response, maybe_notify
 from autoclaude.usage_capture import install_statusline, read_latest_usage
 
 if TYPE_CHECKING:
@@ -64,6 +66,9 @@ class Daemon:
         # claude_usage payload. Initialised to a sentinel that forces the next
         # heartbeat to ship usage if any sample is available.
         self._last_usage_sent_at: float = 0.0
+        # Last tick-archive purge timestamp (monotonic). Throttled to once an
+        # hour so a 30-second heartbeat does not spam the filesystem.
+        self._last_archive_purge_at: float = 0.0
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -86,6 +91,7 @@ class Daemon:
         )
         while not self._stop.is_set():
             self._tick_once()
+            self._maybe_purge_archive()
             if self._stop.wait(self._interval):
                 break
         _log.info("daemon stopped", extra={"source": "cli"})
@@ -106,6 +112,23 @@ class Daemon:
         if claude_usage is not None:
             self._last_usage_sent_at = time.monotonic()
 
+        # Surface CLI version freshness via native notification + persisted state.
+        # The foreground CLI reads the same state file to render an in-terminal
+        # notice; below `min_version` we hard-stop so launchd marks the service
+        # failed and the user is forced to upgrade.
+        status = apply_heartbeat_response(response, current=self._cli_version)
+        maybe_notify(status)
+        if status.blocking:
+            _log.error(
+                "[red]autoclaude %s is below required minimum %s; daemon stopping. "
+                "Upgrade with: uv tool upgrade autoclaude-cli[/red]",
+                status.current,
+                status.minimum,
+                extra={"source": "cli"},
+            )
+            self._stop.set()
+            raise SystemExit(2)
+
         next_interval = response.get("next_heartbeat_in_seconds") if isinstance(response, dict) else None
         if isinstance(next_interval, (int, float)) and next_interval > 0:
             self._interval = max(MIN_INTERVAL_SECONDS, min(float(next_interval), MAX_INTERVAL_SECONDS))
@@ -116,6 +139,16 @@ class Daemon:
                 if not isinstance(task, dict):
                     continue
                 self._dispatch_task(task)
+
+    def _maybe_purge_archive(self) -> None:
+        elapsed = time.monotonic() - self._last_archive_purge_at
+        if self._last_archive_purge_at > 0 and elapsed < 3600:
+            return
+        try:
+            purge_expired()
+        except Exception as exc:  # noqa: BLE001 (best-effort housekeeping)
+            _log.debug("tick archive purge failed: %s", exc, extra={"source": "cli"})
+        self._last_archive_purge_at = time.monotonic()
 
     def _maybe_collect_claude_usage(self) -> dict | None:
         """Read the latest cached rate_limits sample if it's our turn to ship.

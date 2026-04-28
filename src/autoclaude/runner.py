@@ -32,6 +32,7 @@ from autoclaude.gh import ensure_installed as ensure_gh_installed
 from autoclaude.heartbeat import HeartbeatPinger
 from autoclaude.logger import get_logger
 from autoclaude.storage import RepoStorage
+from autoclaude.tick_archive import archive_tick_logs, purge_expired
 from autoclaude.tick_logger import TickLogger
 from autoclaude.tools.applier import apply_manifest
 from autoclaude.tools.manifest import Manifest, ManifestRef
@@ -675,8 +676,16 @@ def _autocreate_github_repo(client: ApiClient, project: dict[str, Any]) -> str:
     return full_repo
 
 
-def _cleanup_worktree(workspace: Workspace, worktree: Worktree) -> None:
-    """Remove the tick's worktree, tolerating any teardown error."""
+def _cleanup_worktree(workspace: Workspace, worktree: Worktree, *, tick_id: int | None = None) -> None:
+    """Archive the tick's `.autoclaude/` logs, then remove the worktree.
+
+    The archive is what backs the dashboard's debug-file requests after the
+    worktree is gone. Pruning expired archives here keeps the runner's
+    on-disk footprint bounded without a separate cron.
+    """
+    if tick_id is not None:
+        archive_tick_logs(tick_id, worktree.path / ".autoclaude")
+        purge_expired()
     try:
         workspace.remove_worktree(worktree)
     except WorkspaceError as exc:
@@ -971,7 +980,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
 
             def _do_workspace_cleanup() -> str:
                 nonlocal worktree_cleaned
-                _cleanup_worktree(workspace, worktree)
+                _cleanup_worktree(workspace, worktree, tick_id=state.tick_id)
                 worktree_cleaned = True
                 return f"worktree at {worktree.path} removed"
 
@@ -1002,7 +1011,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
         if not worktree_cleaned and worktree is not None:
-            _cleanup_worktree(workspace, worktree)
+            _cleanup_worktree(workspace, worktree, tick_id=state.tick_id)
 
     _log.info(
         "[green]tick #%s closed[/green] status=%s cost=$%.4f tokens=%s",

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from autoclaude.debug_files import MAX_CONTENT_BYTES
 from autoclaude.logger import get_logger
-from autoclaude.workspace import WORKTREES_DIRNAME, workspace_home
+from autoclaude.tick_archive import resolve_archived_file
 
 if TYPE_CHECKING:
     from autoclaude.api_client import ApiClient
@@ -25,23 +25,16 @@ TaskHandler = Callable[["ApiClient", dict[str, Any]], dict[str, Any]]
 
 
 def _resolve_tick_local_file(tick_id: int, relative_path: str) -> Path | None:
-    """Best-effort lookup for a file in a known tick worktree.
+    """Look up a file in the per-tick log archive.
 
-    The daemon does not own a specific repo, so it searches every worktree
-    the CLI has created for the given tick id. Returns ``None`` if no match
-    is found (the daemon then denies the request rather than failing it).
+    The daemon only serves files copied into ``<AUTOCLAUDE_HOME>/tick_logs/``
+    by ``runner._cleanup_worktree``. This is the single source of truth: the
+    live worktree is never read directly, so a hostile ``relative_path`` can
+    never reach repository sources, ssh keys, or other host files. Returns
+    ``None`` if the tick has no archive (e.g. ran on a different machine, or
+    archive was purged after the 7-day retention window).
     """
-    worktrees_root = workspace_home() / WORKTREES_DIRNAME
-    if not worktrees_root.exists():
-        return None
-    target_name = str(int(tick_id))
-    for slug_dir in worktrees_root.iterdir():
-        if not slug_dir.is_dir():
-            continue
-        candidate = slug_dir / target_name / ".autoclaude" / relative_path
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return None
+    return resolve_archived_file(tick_id, relative_path)
 
 
 def handle_debug_file_fulfill(client: ApiClient, payload: dict[str, Any]) -> dict[str, Any]:
@@ -59,13 +52,18 @@ def handle_debug_file_fulfill(client: ApiClient, payload: dict[str, Any]) -> dic
         msg = "missing debug_file_request_id, tick_id, or relative_path"
         raise ValueError(msg)
 
-    target = _resolve_tick_local_file(tick_id, relative_path)
     content = ""
     truncated = False
     reason = ""
-    if target is None:
+    target: Path | None
+    try:
+        target = _resolve_tick_local_file(tick_id, relative_path)
+    except ValueError as exc:
+        target = None
+        reason = f"path_rejected: {exc}"
+    if target is None and not reason:
         reason = "daemon_no_local_context"
-    else:
+    if target is not None:
         try:
             raw = target.read_bytes()
         except OSError as exc:
