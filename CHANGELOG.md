@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.16.0...v1.17.0) (2026-04-28)
+
+
+### Features
+
+* **runner:** skip scheduled ticks via server-side interval gate ([4a319df](https://github.com/grezy-software/autoclaude-cli/commit/4a319df6ab40bcd8d73afb22cc331a3f9c61e996))
+
 # [1.16.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.15.0...v1.16.0) (2026-04-28)
 
 
