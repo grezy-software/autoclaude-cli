@@ -709,6 +709,18 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
         _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
 
+    schedule = ctx.get("tick_schedule") or {}
+    if schedule and schedule.get("eligible_now") is False:
+        next_eligible_at = schedule.get("next_eligible_at") or "?"
+        interval_minutes = schedule.get("interval_minutes")
+        _log.info(
+            "[dim]scheduled tick skipped[/dim]: server interval %s min, next eligible at %s",
+            interval_minutes,
+            next_eligible_at,
+            extra={"source": "cli"},
+        )
+        return EXIT_OK
+
     project = ctx.get("project") or {}
     github_repo = project.get("github_repo") or ""
     if not github_repo:
@@ -800,6 +812,16 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
     try:
         tick = client.open_tick(runner_version=__version__)
     except ApiError as exc:
+        if exc.status_code == 425:
+            payload = exc.payload if isinstance(exc.payload, dict) else {}
+            sched = payload.get("tick_schedule") or {}
+            _log.info(
+                "[dim]scheduled tick skipped[/dim]: server interval %s min, next eligible at %s",
+                sched.get("interval_minutes"),
+                sched.get("next_eligible_at") or "?",
+                extra={"source": "cli"},
+            )
+            return EXIT_OK
         _log.error("[red]tick open failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
 
