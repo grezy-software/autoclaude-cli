@@ -39,17 +39,31 @@ uv tool install --force .      # or: pipx install --force ./
 ## Quickstart
 
 ```bash
-# 1. Authenticate once. Defaults to https://app.grezy.com. The CLI asks
-#    before opening the API-key page in your browser.
+# 1. Authenticate once. Defaults to https://app.grezy.com.
+#    Login also installs two per-user services:
+#      - heartbeat  (always-on liveness ping; never paused)
+#      - scheduler  (runs `autoclaude tick` every 15 minutes)
 autoclaude login
 autoclaude login --url localhost:3001        # point at a local frontend
 
 # 2. Verify everything is wired up.
 autoclaude diag
+autoclaude services         # heartbeat + scheduler status
 
-# 3. Fire a tick. The server picks the next Job and plan.
+# 3. Fire a tick manually if you don't want to wait for the scheduler.
 autoclaude tick
 ```
+
+## Pause / resume / switch server
+
+```bash
+autoclaude pause                  # stop scheduled ticks (heartbeat keeps running)
+autoclaude play                   # resume scheduled ticks
+autoclaude switch staging         # change active profile and rebind both services
+```
+
+`pause` only stops the scheduler. The heartbeat is always on so the
+dashboard's "Active CLIs" KPI stays accurate.
 
 ## Profiles
 

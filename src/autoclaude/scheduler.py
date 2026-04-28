@@ -1,0 +1,104 @@
+"""Periodic tick scheduler.
+
+Sibling to the heartbeat daemon. Runs ``runner.run_tick`` on a fixed
+interval (15 minutes minimum) so a logged-in user keeps draining the
+server's tick queue without manual `autoclaude tick` invocations.
+
+Independent service from the heartbeat: pausing the scheduler stops new
+ticks from firing but keeps the heartbeat (and its task channel) alive.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import signal
+import threading
+from typing import TYPE_CHECKING
+
+from autoclaude.api_client import ApiError
+from autoclaude.log_uploader import replay_pending
+from autoclaude.logger import get_logger
+from autoclaude.runner import run_tick as runner_run_tick
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from autoclaude.api_client import ApiClient
+
+_log = get_logger("scheduler")
+
+DEFAULT_INTERVAL_SECONDS = 15 * 60
+MIN_INTERVAL_SECONDS = 15 * 60
+MAX_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+class Scheduler:
+    """Run ticks on an interval. Single-threaded, lock-free.
+
+    Overlap protection is implicit: the loop sleeps *after* the tick
+    returns, so a long tick simply pushes the next start. No second tick
+    starts until the current one exits.
+    """
+
+    def __init__(
+        self,
+        client: ApiClient,
+        *,
+        interval: float = DEFAULT_INTERVAL_SECONDS,
+    ) -> None:
+        self._client = client
+        self._interval = max(MIN_INTERVAL_SECONDS, min(interval, MAX_INTERVAL_SECONDS))
+        self._stop = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    def run_forever(self) -> None:
+        _log.info("scheduler starting (interval=%ss)", self._interval, extra={"source": "cli"})
+        while not self._stop.is_set():
+            self._run_one()
+            if self._stop.wait(self._interval):
+                break
+        _log.info("scheduler stopped", extra={"source": "cli"})
+
+    def _run_one(self) -> None:
+        with contextlib.suppress(Exception):
+            replay_pending(self._client)
+        try:
+            exit_code = runner_run_tick(self._client)
+        except ApiError as exc:
+            _log.warning("scheduler tick api error: %s", exc, extra={"source": "cli"})
+            return
+        except Exception as exc:  # noqa: BLE001 (scheduler swallows everything to keep looping)
+            _log.exception("scheduler tick crashed: %s", exc, extra={"source": "cli"})
+            return
+        if exit_code != 0:
+            _log.warning("scheduler tick exited %s", exit_code, extra={"source": "cli"})
+
+
+def _install_signal_handlers(scheduler: Scheduler) -> None:
+    def _handle(_signum: int, _frame: Any) -> None:
+        scheduler.request_stop()
+
+    signal.signal(signal.SIGTERM, _handle)
+    signal.signal(signal.SIGINT, _handle)
+
+
+def run_scheduler(
+    client: ApiClient,
+    *,
+    interval: float = DEFAULT_INTERVAL_SECONDS,
+) -> None:
+    """Build and run a Scheduler in the foreground until SIGINT/SIGTERM."""
+    scheduler = Scheduler(client, interval=interval)
+    _install_signal_handlers(scheduler)
+    scheduler.run_forever()
+
+
+__all__ = [
+    "DEFAULT_INTERVAL_SECONDS",
+    "MAX_INTERVAL_SECONDS",
+    "MIN_INTERVAL_SECONDS",
+    "Scheduler",
+    "run_scheduler",
+]

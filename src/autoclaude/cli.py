@@ -27,10 +27,17 @@ from autoclaude.runner import (
 from autoclaude.runner import (
     run_tick as runner_run_tick,
 )
-from autoclaude.service_install import ServiceInstallError
-from autoclaude.service_install import install as service_install
-from autoclaude.service_install import status as service_status
-from autoclaude.service_install import uninstall as service_uninstall
+from autoclaude.scheduler import DEFAULT_INTERVAL_SECONDS as SCHEDULER_DEFAULT_INTERVAL
+from autoclaude.scheduler import run_scheduler
+from autoclaude.service_install import (
+    ServiceInstallError,
+    install_all,
+    install_service,
+    pause_scheduler,
+    play_scheduler,
+    status_service,
+    uninstall_all,
+)
 from autoclaude.storage import RepoStorage
 from autoclaude.workspace import workspace_home
 
@@ -115,21 +122,27 @@ def login(
     cfg.save()
     _log.info("[green]saved profile %r[/green] -> %s", prof.name, prof.url, extra={"source": "cli"})
 
-    if typer.confirm("Install background heartbeat (recommended)?", default=True):
-        try:
-            result = service_install(prof.name)
-        except ServiceInstallError as exc:
-            _log.warning(
-                "[yellow]daemon install failed[/yellow]: %s. Run `autoclaude install-daemon` to retry.",
-                exc,
-                extra={"source": "cli"},
-            )
-        else:
+    try:
+        results = install_all(prof.name)
+    except ServiceInstallError as exc:
+        _log.warning(
+            "[yellow]service install failed[/yellow]: %s. Run `autoclaude install-services` to retry.",
+            exc,
+            extra={"source": "cli"},
+        )
+    else:
+        for result in results:
             _log.info(
-                "[green]daemon installed[/green] (%s)",
+                "[green]service installed[/green] (%s)",
                 result.detail,
                 extra={"source": "cli"},
             )
+        _log.info(
+            "heartbeat running, scheduler ticking every %d minutes. "
+            "Use `autoclaude pause` to stop scheduled ticks.",
+            int(SCHEDULER_DEFAULT_INTERVAL // 60),
+            extra={"source": "cli"},
+        )
 
 
 @app.command()
@@ -345,7 +358,7 @@ def daemon(
     """Run the background heartbeat in the foreground.
 
     Normally launched by the per-user service installed via
-    ``autoclaude login`` (or ``autoclaude install-daemon``). Run it
+    ``autoclaude login`` (or ``autoclaude install-services``). Run it
     manually to debug locally; SIGINT/SIGTERM exits cleanly.
     """
     _cfg, prof = _load(ctx, profile)
@@ -357,27 +370,118 @@ def daemon(
         raise typer.Exit(code=1) from exc
 
 
-@app.command(name="install-daemon")
-def install_daemon(ctx: typer.Context, profile: ProfileOption = None) -> None:
-    """Register the daemon as a per-user service for the current platform."""
+@app.command()
+def scheduler(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
+    interval: Annotated[
+        float,
+        typer.Option(
+            "--interval",
+            help="Tick cadence in seconds (clamped to >= 15 minutes).",
+        ),
+    ] = SCHEDULER_DEFAULT_INTERVAL,
+) -> None:
+    """Run the periodic tick scheduler in the foreground.
+
+    Normally launched by the per-user service installed via
+    ``autoclaude login`` (or ``autoclaude install-services``). Run it
+    manually to debug locally; SIGINT/SIGTERM exits cleanly.
+    """
     _cfg, prof = _load(ctx, profile)
     try:
-        result = service_install(prof.name)
+        with ApiClient(prof, cli_version=__version__) as client:
+            run_scheduler(client, interval=interval)
+    except ApiError as exc:
+        _log.error("[red]scheduler api error[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="install-services")
+def install_services(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Register heartbeat + scheduler as per-user services."""
+    _cfg, prof = _load(ctx, profile)
+    try:
+        results = install_all(prof.name)
     except ServiceInstallError as exc:
         _log.error("[red]install failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
-    _log.info("[green]daemon installed[/green] (%s)", result.detail, extra={"source": "cli"})
+    for result in results:
+        _log.info("[green]installed[/green] (%s)", result.detail, extra={"source": "cli"})
 
 
-@app.command(name="uninstall-daemon")
-def uninstall_daemon() -> None:
-    """Remove the per-user daemon service for the current platform."""
+@app.command(name="uninstall-services")
+def uninstall_services() -> None:
+    """Remove heartbeat + scheduler services."""
     try:
-        result = service_uninstall()
+        results = uninstall_all()
     except ServiceInstallError as exc:
         _log.error("[red]uninstall failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
-    _log.info("[green]daemon removed[/green] (%s)", result.detail, extra={"source": "cli"})
+    for result in results:
+        _log.info("[green]removed[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+@app.command()
+def pause() -> None:
+    """Stop the scheduler (heartbeat keeps running)."""
+    try:
+        result = pause_scheduler()
+    except ServiceInstallError as exc:
+        _log.error("[red]pause failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    _log.info(
+        "[yellow]scheduler paused[/yellow] (%s). Heartbeat untouched. Resume with `autoclaude play`.",
+        result.detail,
+        extra={"source": "cli"},
+    )
+
+
+@app.command()
+def play(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Resume the scheduler."""
+    _cfg, prof = _load(ctx, profile)
+    try:
+        result = play_scheduler(prof.name)
+    except ServiceInstallError as exc:
+        _log.error("[red]play failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    _log.info("[green]scheduler running[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+@app.command()
+def switch(name: str) -> None:
+    """Switch active profile and rebind both services to it."""
+    cfg = Config.load()
+    if name not in cfg.profiles:
+        _log.error(
+            "[red]unknown profile %r[/red]; known: %s. Run `autoclaude login --profile %s` first.",
+            name,
+            ", ".join(sorted(cfg.profiles)) or "[dim]none[/dim]",
+            name,
+            extra={"source": "cli"},
+        )
+        raise typer.Exit(code=1)
+    cfg.active = name
+    cfg.save()
+    prof = cfg.profiles[name]
+    _log.info(
+        "[green]active profile -> %s[/green] (%s)",
+        name,
+        prof.url or "[dim]no url[/dim]",
+        extra={"source": "cli"},
+    )
+    try:
+        results = install_all(prof.name)
+    except ServiceInstallError as exc:
+        _log.warning(
+            "[yellow]service rebind failed[/yellow]: %s. Run `autoclaude install-services` to retry.",
+            exc,
+            extra={"source": "cli"},
+        )
+        return
+    for result in results:
+        _log.info("[green]rebound[/green] (%s)", result.detail, extra={"source": "cli"})
 
 
 task_app = typer.Typer(
@@ -495,15 +599,18 @@ def task_create(
     typer.echo(str(task_id))
 
 
-@app.command(name="daemon-status")
-def daemon_status() -> None:
-    """Print the current platform's daemon service status."""
+@app.command()
+def services(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Print platform service status for heartbeat + scheduler."""
+    _load(ctx, profile)
     try:
-        result = service_status()
+        heartbeat = status_service("heartbeat")
+        sched = status_service("scheduler")
     except ServiceInstallError as exc:
         _log.error("[red]status failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
-    _log.info("daemon status (%s): %s", result.platform, result.detail, extra={"source": "cli"})
+    _log.info("heartbeat (%s): %s", heartbeat.platform, heartbeat.detail, extra={"source": "cli"})
+    _log.info("scheduler (%s): %s", sched.platform, sched.detail, extra={"source": "cli"})
 
 
 if __name__ == "__main__":

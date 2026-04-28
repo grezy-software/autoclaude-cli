@@ -1,16 +1,23 @@
-"""Per-user service registration for the AutoClaude daemon.
+"""Per-user service registration for AutoClaude.
 
-Three platforms are supported:
+Two services per logged-in profile:
 
-- macOS: a launchd LaunchAgent at ``~/Library/LaunchAgents/<label>.plist``,
-  loaded with ``launchctl bootstrap gui/<uid>``.
-- Linux: a ``systemd --user`` unit at
-  ``~/.config/systemd/user/autoclaude.service``, enabled with
-  ``systemctl --user enable --now``.
-- Windows: a Task Scheduler entry created at user logon via ``schtasks.exe``.
+- ``heartbeat`` -- always-on liveness daemon (``autoclaude daemon``).
+- ``scheduler`` -- periodic tick runner (``autoclaude scheduler``).
 
-All three end up running ``<autoclaude> daemon --profile <name>`` in the
-foreground; the platform handles restart/respawn semantics.
+Both are managed via the platform's per-user service supervisor:
+
+- macOS: launchd LaunchAgent plists in ``~/Library/LaunchAgents/``.
+- Linux: ``systemd --user`` units in ``~/.config/systemd/user/``.
+- Windows: Task Scheduler entries created with ``schtasks.exe``.
+
+The scheduler is the only pausable service: ``pause_scheduler`` disables
+the unit so it does not auto-start on next login; ``play_scheduler``
+re-enables and starts it. The heartbeat is never paused.
+
+Legacy single-service installs (label ``com.grezy.autoclaude``) are
+booted out on first install so upgrades from the older single-daemon
+layout migrate cleanly.
 """
 
 from __future__ import annotations
@@ -21,10 +28,24 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-LAUNCHD_LABEL = "com.grezy.autoclaude"
-SYSTEMD_UNIT_NAME = "autoclaude.service"
-SCHTASKS_NAME = "AutoClaude"
+# New per-service identifiers.
+HEARTBEAT_LABEL = "com.grezy.autoclaude.heartbeat"
+SCHEDULER_LABEL = "com.grezy.autoclaude.scheduler"
+
+HEARTBEAT_SYSTEMD_UNIT = "autoclaude-heartbeat.service"
+SCHEDULER_SYSTEMD_UNIT = "autoclaude-scheduler.service"
+
+HEARTBEAT_SCHTASKS_NAME = "AutoClaudeHeartbeat"
+SCHEDULER_SCHTASKS_NAME = "AutoClaudeScheduler"
+
+# Legacy single-service identifiers (pre-split). Cleaned up on install.
+LEGACY_LAUNCHD_LABEL = "com.grezy.autoclaude"
+LEGACY_SYSTEMD_UNIT = "autoclaude.service"
+LEGACY_SCHTASKS_NAME = "AutoClaude"
+
+ServiceKind = Literal["heartbeat", "scheduler"]
 
 
 @dataclass(frozen=True)
@@ -55,25 +76,47 @@ def _resolve_autoclaude_binary() -> str:
     return f"{sys.executable} -m autoclaude.cli"
 
 
-def _macos_plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, check=False, capture_output=True, text=True)
 
 
-def _systemd_unit_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "systemd" / "user" / SYSTEMD_UNIT_NAME
+def _service_subcommand(kind: ServiceKind) -> str:
+    return "daemon" if kind == "heartbeat" else "scheduler"
 
 
-def _macos_plist(binary: str, profile: str) -> str:
+def _label(kind: ServiceKind) -> str:
+    return HEARTBEAT_LABEL if kind == "heartbeat" else SCHEDULER_LABEL
+
+
+def _systemd_unit(kind: ServiceKind) -> str:
+    return HEARTBEAT_SYSTEMD_UNIT if kind == "heartbeat" else SCHEDULER_SYSTEMD_UNIT
+
+
+def _schtasks_name(kind: ServiceKind) -> str:
+    return HEARTBEAT_SCHTASKS_NAME if kind == "heartbeat" else SCHEDULER_SCHTASKS_NAME
+
+
+# -- macOS / launchd ---------------------------------------------------------
+
+
+def _macos_plist_path(kind: ServiceKind) -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_label(kind)}.plist"
+
+
+def _macos_plist(binary: str, profile: str, kind: ServiceKind) -> str:
+    label = _label(kind)
+    subcommand = _service_subcommand(kind)
     program_args = "\n".join(
-        f"        <string>{piece}</string>" for piece in [*binary.split(), "daemon", "--profile", profile]
+        f"        <string>{piece}</string>"
+        for piece in [*binary.split(), subcommand, "--profile", profile]
     )
+    log_dir = Path.home() / ".config" / "autoclaude" / "logs"
     return f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\">
 <dict>
     <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
+    <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
 {program_args}
@@ -83,44 +126,35 @@ def _macos_plist(binary: str, profile: str) -> str:
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{Path.home() / ".config" / "autoclaude" / "logs" / "daemon.out.log"}</string>
+    <string>{log_dir / f"{kind}.out.log"}</string>
     <key>StandardErrorPath</key>
-    <string>{Path.home() / ".config" / "autoclaude" / "logs" / "daemon.err.log"}</string>
+    <string>{log_dir / f"{kind}.err.log"}</string>
 </dict>
 </plist>
 """
 
 
-def _systemd_unit(binary: str, profile: str) -> str:
-    return f"""[Unit]
-Description=AutoClaude background daemon
-After=network-online.target
-
-[Service]
-Type=simple
-ExecStart={binary} daemon --profile {profile}
-Restart=on-failure
-RestartSec=10
-StandardOutput=append:%h/.config/autoclaude/logs/daemon.out.log
-StandardError=append:%h/.config/autoclaude/logs/daemon.err.log
-
-[Install]
-WantedBy=default.target
-"""
+def _macos_uid() -> int:
+    return os.getuid()
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+def _macos_remove_legacy() -> None:
+    """Remove pre-split single-service install if it lingers."""
+    uid = _macos_uid()
+    _run(["launchctl", "bootout", f"gui/{uid}/{LEGACY_LAUNCHD_LABEL}"])
+    legacy_plist = Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_LAUNCHD_LABEL}.plist"
+    if legacy_plist.exists():
+        legacy_plist.unlink()
 
 
-def install_macos(binary: str, profile: str) -> InstallResult:
-    plist_path = _macos_plist_path()
+def _macos_bootstrap(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+    plist_path = _macos_plist_path(kind)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_text(_macos_plist(binary, profile))
-    uid = os.getuid()
-    # bootstrap is the modern equivalent of `launchctl load`. If a stale
-    # entry exists we bootout first so install is idempotent.
-    _run(["launchctl", "bootout", f"gui/{uid}/{LAUNCHD_LABEL}"])
+    plist_path.write_text(_macos_plist(binary, profile, kind))
+    uid = _macos_uid()
+    label = _label(kind)
+    _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
+    _run(["launchctl", "enable", f"gui/{uid}/{label}"])
     result = _run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)])
     if result.returncode != 0:
         msg = f"launchctl bootstrap failed: {result.stderr.strip() or result.stdout.strip()}"
@@ -128,18 +162,27 @@ def install_macos(binary: str, profile: str) -> InstallResult:
     return InstallResult(platform="darwin", action="installed", detail=str(plist_path))
 
 
-def uninstall_macos() -> InstallResult:
-    plist_path = _macos_plist_path()
-    uid = os.getuid()
-    _run(["launchctl", "bootout", f"gui/{uid}/{LAUNCHD_LABEL}"])
-    if plist_path.exists():
+def _macos_bootout(kind: ServiceKind, *, remove_plist: bool) -> InstallResult:
+    plist_path = _macos_plist_path(kind)
+    uid = _macos_uid()
+    label = _label(kind)
+    _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
+    if remove_plist and plist_path.exists():
         plist_path.unlink()
     return InstallResult(platform="darwin", action="uninstalled", detail=str(plist_path))
 
 
-def status_macos() -> InstallResult:
-    uid = os.getuid()
-    result = _run(["launchctl", "print", f"gui/{uid}/{LAUNCHD_LABEL}"])
+def _macos_disable(kind: ServiceKind) -> None:
+    uid = _macos_uid()
+    label = _label(kind)
+    _run(["launchctl", "disable", f"gui/{uid}/{label}"])
+    _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
+
+
+def _macos_status(kind: ServiceKind) -> InstallResult:
+    uid = _macos_uid()
+    label = _label(kind)
+    result = _run(["launchctl", "print", f"gui/{uid}/{label}"])
     return InstallResult(
         platform="darwin",
         action="status",
@@ -147,29 +190,64 @@ def status_macos() -> InstallResult:
     )
 
 
-def install_linux(binary: str, profile: str) -> InstallResult:
-    unit_path = _systemd_unit_path()
-    unit_path.parent.mkdir(parents=True, exist_ok=True)
-    unit_path.write_text(_systemd_unit(binary, profile))
+# -- Linux / systemd --------------------------------------------------------
+
+
+def _systemd_unit_path(kind: ServiceKind) -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user" / _systemd_unit(kind)
+
+
+def _systemd_unit_body(binary: str, profile: str, kind: ServiceKind) -> str:
+    subcommand = _service_subcommand(kind)
+    return f"""[Unit]
+Description=AutoClaude {kind} service
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart={binary} {subcommand} --profile {profile}
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:%h/.config/autoclaude/logs/{kind}.out.log
+StandardError=append:%h/.config/autoclaude/logs/{kind}.err.log
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _systemd_remove_legacy() -> None:
+    _run(["systemctl", "--user", "disable", "--now", LEGACY_SYSTEMD_UNIT])
+    legacy = Path.home() / ".config" / "systemd" / "user" / LEGACY_SYSTEMD_UNIT
+    if legacy.exists():
+        legacy.unlink()
     _run(["systemctl", "--user", "daemon-reload"])
-    result = _run(["systemctl", "--user", "enable", "--now", SYSTEMD_UNIT_NAME])
+
+
+def _systemd_install(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+    unit_path = _systemd_unit_path(kind)
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(_systemd_unit_body(binary, profile, kind))
+    _run(["systemctl", "--user", "daemon-reload"])
+    result = _run(["systemctl", "--user", "enable", "--now", _systemd_unit(kind)])
     if result.returncode != 0:
         msg = f"systemctl --user enable --now failed: {result.stderr.strip() or result.stdout.strip()}"
         raise ServiceInstallError(msg)
     return InstallResult(platform="linux", action="installed", detail=str(unit_path))
 
 
-def uninstall_linux() -> InstallResult:
-    unit_path = _systemd_unit_path()
-    _run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT_NAME])
+def _systemd_uninstall(kind: ServiceKind) -> InstallResult:
+    unit_path = _systemd_unit_path(kind)
+    _run(["systemctl", "--user", "disable", "--now", _systemd_unit(kind)])
     if unit_path.exists():
         unit_path.unlink()
     _run(["systemctl", "--user", "daemon-reload"])
     return InstallResult(platform="linux", action="uninstalled", detail=str(unit_path))
 
 
-def status_linux() -> InstallResult:
-    result = _run(["systemctl", "--user", "is-active", SYSTEMD_UNIT_NAME])
+def _systemd_status(kind: ServiceKind) -> InstallResult:
+    result = _run(["systemctl", "--user", "is-active", _systemd_unit(kind)])
     return InstallResult(
         platform="linux",
         action="status",
@@ -177,7 +255,20 @@ def status_linux() -> InstallResult:
     )
 
 
-def install_windows(binary: str, profile: str) -> InstallResult:
+def _systemd_disable(kind: ServiceKind) -> None:
+    _run(["systemctl", "--user", "disable", "--now", _systemd_unit(kind)])
+
+
+def _systemd_enable(kind: ServiceKind) -> None:
+    _run(["systemctl", "--user", "enable", "--now", _systemd_unit(kind)])
+
+
+# -- Windows / schtasks -----------------------------------------------------
+
+
+def _windows_install(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+    name = _schtasks_name(kind)
+    subcommand = _service_subcommand(kind)
     cmd = [
         "schtasks.exe",
         "/Create",
@@ -187,26 +278,28 @@ def install_windows(binary: str, profile: str) -> InstallResult:
         "/RL",
         "LIMITED",
         "/TN",
-        SCHTASKS_NAME,
+        name,
         "/TR",
-        f'"{binary}" daemon --profile {profile}',
+        f'"{binary}" {subcommand} --profile {profile}',
     ]
     result = _run(cmd)
     if result.returncode != 0:
         msg = f"schtasks /Create failed: {result.stderr.strip() or result.stdout.strip()}"
         raise ServiceInstallError(msg)
-    _run(["schtasks.exe", "/Run", "/TN", SCHTASKS_NAME])
-    return InstallResult(platform="win32", action="installed", detail=SCHTASKS_NAME)
+    _run(["schtasks.exe", "/Run", "/TN", name])
+    return InstallResult(platform="win32", action="installed", detail=name)
 
 
-def uninstall_windows() -> InstallResult:
-    _run(["schtasks.exe", "/End", "/TN", SCHTASKS_NAME])
-    _run(["schtasks.exe", "/Delete", "/F", "/TN", SCHTASKS_NAME])
-    return InstallResult(platform="win32", action="uninstalled", detail=SCHTASKS_NAME)
+def _windows_uninstall(kind: ServiceKind) -> InstallResult:
+    name = _schtasks_name(kind)
+    _run(["schtasks.exe", "/End", "/TN", name])
+    _run(["schtasks.exe", "/Delete", "/F", "/TN", name])
+    return InstallResult(platform="win32", action="uninstalled", detail=name)
 
 
-def status_windows() -> InstallResult:
-    result = _run(["schtasks.exe", "/Query", "/TN", SCHTASKS_NAME])
+def _windows_status(kind: ServiceKind) -> InstallResult:
+    name = _schtasks_name(kind)
+    result = _run(["schtasks.exe", "/Query", "/TN", name])
     return InstallResult(
         platform="win32",
         action="status",
@@ -214,48 +307,116 @@ def status_windows() -> InstallResult:
     )
 
 
-def install(profile: str) -> InstallResult:
-    """Register the daemon as a per-user service for the current platform."""
+def _windows_disable(kind: ServiceKind) -> None:
+    name = _schtasks_name(kind)
+    _run(["schtasks.exe", "/End", "/TN", name])
+    _run(["schtasks.exe", "/Change", "/TN", name, "/DISABLE"])
+
+
+def _windows_enable(kind: ServiceKind) -> None:
+    name = _schtasks_name(kind)
+    _run(["schtasks.exe", "/Change", "/TN", name, "/ENABLE"])
+    _run(["schtasks.exe", "/Run", "/TN", name])
+
+
+def _windows_remove_legacy() -> None:
+    _run(["schtasks.exe", "/End", "/TN", LEGACY_SCHTASKS_NAME])
+    _run(["schtasks.exe", "/Delete", "/F", "/TN", LEGACY_SCHTASKS_NAME])
+
+
+# -- Public dispatch --------------------------------------------------------
+
+
+def _remove_legacy() -> None:
+    if sys.platform == "darwin":
+        _macos_remove_legacy()
+    elif sys.platform.startswith("linux"):
+        _systemd_remove_legacy()
+    elif sys.platform.startswith("win"):
+        _windows_remove_legacy()
+
+
+def install_service(kind: ServiceKind, profile: str) -> InstallResult:
     binary = _resolve_autoclaude_binary()
     if sys.platform == "darwin":
-        return install_macos(binary, profile)
+        return _macos_bootstrap(kind, binary, profile)
     if sys.platform.startswith("linux"):
-        return install_linux(binary, profile)
+        return _systemd_install(kind, binary, profile)
     if sys.platform.startswith("win"):
-        return install_windows(binary, profile)
+        return _windows_install(kind, binary, profile)
     msg = f"unsupported platform: {sys.platform}"
     raise ServiceInstallError(msg)
 
 
-def uninstall() -> InstallResult:
+def uninstall_service(kind: ServiceKind) -> InstallResult:
     if sys.platform == "darwin":
-        return uninstall_macos()
+        return _macos_bootout(kind, remove_plist=True)
     if sys.platform.startswith("linux"):
-        return uninstall_linux()
+        return _systemd_uninstall(kind)
     if sys.platform.startswith("win"):
-        return uninstall_windows()
+        return _windows_uninstall(kind)
     msg = f"unsupported platform: {sys.platform}"
     raise ServiceInstallError(msg)
 
 
-def status() -> InstallResult:
+def status_service(kind: ServiceKind) -> InstallResult:
     if sys.platform == "darwin":
-        return status_macos()
+        return _macos_status(kind)
     if sys.platform.startswith("linux"):
-        return status_linux()
+        return _systemd_status(kind)
     if sys.platform.startswith("win"):
-        return status_windows()
+        return _windows_status(kind)
     msg = f"unsupported platform: {sys.platform}"
     raise ServiceInstallError(msg)
+
+
+def install_all(profile: str) -> list[InstallResult]:
+    """Install both heartbeat and scheduler services for ``profile``."""
+    _remove_legacy()
+    return [install_service("heartbeat", profile), install_service("scheduler", profile)]
+
+
+def uninstall_all() -> list[InstallResult]:
+    """Remove both services. Legacy single-service install is also cleaned up."""
+    _remove_legacy()
+    return [uninstall_service("heartbeat"), uninstall_service("scheduler")]
+
+
+def pause_scheduler() -> InstallResult:
+    """Stop and disable the scheduler so it does not auto-restart."""
+    if sys.platform == "darwin":
+        _macos_disable("scheduler")
+        return InstallResult(platform="darwin", action="paused", detail=str(_macos_plist_path("scheduler")))
+    if sys.platform.startswith("linux"):
+        _systemd_disable("scheduler")
+        return InstallResult(platform="linux", action="paused", detail=SCHEDULER_SYSTEMD_UNIT)
+    if sys.platform.startswith("win"):
+        _windows_disable("scheduler")
+        return InstallResult(platform="win32", action="paused", detail=SCHEDULER_SCHTASKS_NAME)
+    msg = f"unsupported platform: {sys.platform}"
+    raise ServiceInstallError(msg)
+
+
+def play_scheduler(profile: str) -> InstallResult:
+    """(Re-)enable and start the scheduler. Reinstalls the unit if needed."""
+    return install_service("scheduler", profile)
 
 
 __all__ = [
-    "LAUNCHD_LABEL",
-    "SCHTASKS_NAME",
-    "SYSTEMD_UNIT_NAME",
+    "HEARTBEAT_LABEL",
+    "HEARTBEAT_SCHTASKS_NAME",
+    "HEARTBEAT_SYSTEMD_UNIT",
     "InstallResult",
+    "SCHEDULER_LABEL",
+    "SCHEDULER_SCHTASKS_NAME",
+    "SCHEDULER_SYSTEMD_UNIT",
     "ServiceInstallError",
-    "install",
-    "status",
-    "uninstall",
+    "ServiceKind",
+    "install_all",
+    "install_service",
+    "pause_scheduler",
+    "play_scheduler",
+    "status_service",
+    "uninstall_all",
+    "uninstall_service",
 ]
