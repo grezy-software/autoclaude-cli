@@ -299,13 +299,14 @@ def _execute_steps(  # noqa: PLR0911, PLR0915
         _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost, storage=storage)
         agent = step["agent_slug"]
         prompt = step.get("prompt") or ""
+        display_name = step.get("display_name") or agent
         try:
             opened = client.open_step(
                 tick_id=state.tick_id,
                 kind=KIND_AGENT,
                 agent_slug=agent,
                 ordinal=ordinal,
-                name=agent,
+                name=display_name,
                 action=prompt[:_PROMPT_ACTION_CHARS],
             )
         except ApiError as exc:
