@@ -24,7 +24,7 @@ from autoclaude import __version__
 from autoclaude import gh as gh_helpers
 from autoclaude import repo_config as repo_config_mod
 from autoclaude.api_client import ApiClient, ApiError
-from autoclaude.claude_proc import run_step
+from autoclaude.claude_proc import ClaudeResult, run_step
 from autoclaude.debug_files import fulfill_pending as fulfill_debug_requests
 from autoclaude.file_tree import build_snapshot as build_file_tree_snapshot
 from autoclaude.gh import GhError
@@ -54,7 +54,12 @@ STATUS_ABANDONED = "abandoned"
 
 KIND_SETUP = "setup"
 KIND_AGENT = "agent"
+KIND_TOOL = "tool"
 KIND_CLEANUP = "cleanup"
+
+# Cap stdout passed into a tool dispatch prompt; very long agent runs would
+# otherwise blow past Claude's context budget for the (small) tool step.
+_TOOL_STDOUT_MAX_CHARS = 32_000
 
 STEP_REPO_SYNC = "repo_sync"
 STEP_STORAGE_PREP = "storage_prep"
@@ -264,7 +269,7 @@ def _run_lifecycle_step(
     return ok, summary if ok else error_log
 
 
-def _execute_steps(
+def _execute_steps(  # noqa: PLR0911, PLR0915
     client: ApiClient,
     state: _TickState,
     steps: list[dict[str, Any]],
@@ -273,11 +278,18 @@ def _execute_steps(
     storage: RepoStorage,
     *,
     start_ordinal: int,
+    tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Run agent steps. Returns the ordinal immediately after the last one."""
-    ordinal = start_ordinal
-    for offset, step in enumerate(steps):
-        ordinal = start_ordinal + offset
+    """Run agent steps. Returns the ordinal immediately after the last one.
+
+    After each successful agent step, every tool listed in ``tools`` is
+    dispatched as its own ``KIND_TOOL`` step (see :func:`_run_tool_steps`).
+    Tool failures are non-fatal; only token exhaustion bubbles up.
+    """
+    tool_refs = [t for t in (tools or []) if t.get("slug")]
+    ordinal = start_ordinal - 1
+    for step in steps:
+        ordinal += 1
         if shutdown_requested["value"]:
             state.status = STATUS_ABANDONED
             state.error = "client received shutdown signal"
@@ -371,7 +383,155 @@ def _execute_steps(
             _log.error("agent %s failed (rc != 0)", agent, extra={"source": "cli", "step_id": step_id})
             return ordinal
         state.outcomes.append(f"{agent}: ok")
-    return start_ordinal + len(steps) - 1
+        if tool_refs:
+            ordinal = _run_tool_steps(
+                client,
+                state,
+                tool_refs,
+                repo_checkout,
+                shutdown_requested,
+                storage,
+                parent_step=step,
+                parent_result=result,
+                start_ordinal=ordinal + 1,
+            )
+            if state.status == STATUS_TOKEN_EXHAUSTED:
+                return ordinal
+    return ordinal
+
+
+def _resolve_tool_command(storage: RepoStorage, slug: str) -> str:
+    """Return the slash command name to invoke for ``slug``.
+
+    Reads the cached manifest body (written during tool reconcile) and
+    returns the first command name. Falls back to the slug itself when no
+    manifest is on disk yet (e.g. cached install from a previous CLI version
+    that didn't persist manifests). The slash prefix is added by the caller.
+    """
+    body = storage.read_tool_manifest(slug)
+    if body:
+        commands = body.get("commands") or []
+        if commands and isinstance(commands, list):
+            first = commands[0]
+            if isinstance(first, dict):
+                name = first.get("name")
+                if isinstance(name, str) and name:
+                    return name
+    return slug
+
+
+def _build_tool_prompt(*, command: str, agent_slug: str, summary: str, stdout: str) -> str:
+    """Wrap a slash command with the parent agent step's summary + stdout."""
+    truncated = stdout
+    if len(truncated) > _TOOL_STDOUT_MAX_CHARS:
+        truncated = "[truncated]\n" + truncated[-_TOOL_STDOUT_MAX_CHARS:]
+    return f"/{command}\n\nPrevious step: {agent_slug}\nSummary: {summary or '(no summary)'}\n\n--- stdout ---\n{truncated}\n"
+
+
+def _run_tool_steps(
+    client: ApiClient,
+    state: _TickState,
+    tool_refs: list[dict[str, Any]],
+    repo_checkout: Path,
+    shutdown_requested: dict[str, bool],
+    storage: RepoStorage,
+    *,
+    parent_step: dict[str, Any],
+    parent_result: ClaudeResult,
+    start_ordinal: int,
+) -> int:
+    """Run one tool step per active tool against the parent agent step's output.
+
+    Each tool gets its own ``KIND_TOOL`` TickStep on the server. We spawn
+    ``claude -p`` with the tool's slash command, feeding it the parent
+    agent's summary + stdout. Tool failures are logged but don't fail the
+    tick (Discord posting is informational, not load-bearing). Token
+    exhaustion is the only condition that bubbles up.
+
+    Returns the last ordinal consumed (the last tool step's ordinal, or
+    ``start_ordinal - 1`` if no tools ran).
+    """
+    agent_slug = parent_step.get("agent_slug") or ""
+    ordinal = start_ordinal - 1
+    for ref in tool_refs:
+        if shutdown_requested["value"]:
+            return ordinal
+        slug = str(ref["slug"])
+        ordinal += 1
+        command = _resolve_tool_command(storage, slug)
+        action = f"/{command}"
+        try:
+            opened = client.open_step(
+                tick_id=state.tick_id,
+                kind=KIND_TOOL,
+                agent_slug=agent_slug,
+                ordinal=ordinal,
+                name=f"{agent_slug}::{slug}" if agent_slug else slug,
+                action=action,
+            )
+        except ApiError as exc:
+            _log.warning(
+                "tool step open failed for %s: %s",
+                slug,
+                exc,
+                extra={"source": "cli"},
+            )
+            continue
+        tool_step_id = opened["id"]
+        prompt = _build_tool_prompt(
+            command=command,
+            agent_slug=agent_slug,
+            summary=parent_result.summary,
+            stdout=parent_result.stdout,
+        )
+        storage.write_step_prompt(state.tick_id, tool_step_id, prompt)
+        _log.info("[cyan]→[/cyan] tool %s", slug, extra={"source": "cli", "step_id": tool_step_id})
+        result = run_step(
+            prompt,
+            cwd=repo_checkout,
+            step_id=tool_step_id,
+            env=_step_env(client, parent_step),
+        )
+        storage.write_step_streams(state.tick_id, tool_step_id, stdout=result.stdout, stderr=result.stderr)
+        state.total_cost += result.total_cost_usd
+        state.total_tokens += result.token_cost_estimate
+        if result.ok:
+            error_log = ""
+        elif result.fail_reason:
+            error_log = result.fail_reason
+        else:
+            error_log = (result.stderr or result.stdout)[-_ERROR_CHARS:]
+        try:
+            client.close_step(
+                tool_step_id,
+                summary=result.summary,
+                error_log=error_log,
+                cost_usd=result.total_cost_usd,
+                token_cost_estimate=result.token_cost_estimate,
+            )
+        except ApiError as exc:
+            _log.warning(
+                "tool step close failed for %s: %s",
+                slug,
+                exc,
+                extra={"source": "cli", "step_id": tool_step_id},
+            )
+        if result.token_exhausted:
+            state.status = STATUS_TOKEN_EXHAUSTED
+            state.error = "Claude subscription out of tokens."
+            _log.error(
+                "tool %s hit token exhaustion; pausing tick",
+                slug,
+                extra={"source": "cli", "step_id": tool_step_id},
+            )
+            return ordinal
+        if not result.ok:
+            _log.warning(
+                "tool %s failed (rc != 0); continuing tick",
+                slug,
+                extra={"source": "cli", "step_id": tool_step_id},
+            )
+    return ordinal
 
 
 def _reconcile_tools(client: ApiClient, tool_refs: list[dict[str, Any]], *, storage: RepoStorage) -> int:
@@ -404,6 +564,9 @@ def _reconcile_tools(client: ApiClient, tool_refs: list[dict[str, Any]], *, stor
             body=payload.get("manifest") or {},
         )
         touched = apply_manifest(home, manifest)
+        # Persist the manifest body so later phases (e.g. _run_tool_steps) can
+        # look up the slash command name for the tool without re-fetching.
+        storage.write_tool_manifest(ref.slug, payload.get("manifest") or {})
         new_cache[ref.slug] = manifest.manifest_hash
         applied += 1
         _log.info(
@@ -724,6 +887,7 @@ def _run_tick_locked(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + expl
                 shutdown_requested,
                 storage,
                 start_ordinal=agent_start_ordinal,
+                tools=plan.get("tools") or [],
             )
 
             cleanup_base = last_agent_ordinal + 1 if steps else agent_start_ordinal

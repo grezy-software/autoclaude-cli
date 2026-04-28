@@ -392,6 +392,27 @@ class RepoStorage:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_json(self.tool_hashes_path, hashes)
 
+    def tool_manifest_path(self, slug: str) -> Path:
+        safe = validate_tool_slug(slug)
+        return self.tool_dir(safe) / "manifest.json"
+
+    def write_tool_manifest(self, slug: str, manifest: dict[str, Any]) -> Path:
+        """Atomically persist a tool manifest body for later lookup (e.g. command names)."""
+        path = self.tool_manifest_path(slug)
+        atomic_write_json(path, manifest)
+        return path
+
+    def read_tool_manifest(self, slug: str) -> dict[str, Any] | None:
+        """Return the cached manifest body for ``slug`` or ``None``."""
+        path = self.tool_manifest_path(slug)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def tool_memory_path(self, slug: str, *, name: str = DEFAULT_TOOL_MEMORY_FILE) -> Path:
         return self.tool_dir(slug) / name
 

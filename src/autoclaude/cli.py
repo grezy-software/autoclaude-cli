@@ -415,7 +415,7 @@ def task_create(
         int | None,
         typer.Option("--project-id", help="Project to attach the task to. Defaults to the active project."),
     ] = None,
-    is_blocking: Annotated[
+    is_blocking: Annotated[  # noqa: FBT002 (Typer option, value is driven by the CLI flag)
         bool,
         typer.Option(
             "--is-blocking/--no-is-blocking",
