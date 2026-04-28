@@ -1,3 +1,10 @@
+## [1.13.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.13.0...v1.13.1) (2026-04-28)
+
+
+### Bug Fixes
+
+* **api-client:** handle streaming request body in failure handler ([a0aa622](https://github.com/grezy-software/autoclaude-cli/commit/a0aa6223f0f6732f9fdfda35934fcb8048c4a3ab))
+
 # [1.13.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.12.0...v1.13.0) (2026-04-28)
 
 
