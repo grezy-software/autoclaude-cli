@@ -1,3 +1,10 @@
+# [2.2.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.1.0...v2.2.0) (2026-04-29)
+
+
+### Features
+
+* **cli:** show status for every profile ([e847801](https://github.com/grezy-software/autoclaude-cli/commit/e8478016aa33c8f986a0b0749e926dfcd70cb044))
+
 # [2.1.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.0.0...v2.1.0) (2026-04-29)
 
 
