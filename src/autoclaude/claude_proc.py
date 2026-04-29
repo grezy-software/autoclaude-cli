@@ -18,11 +18,11 @@ Failure detection has three layers:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
 import subprocess
-import contextvars
 import threading
 import time
 from dataclasses import dataclass, field
@@ -128,7 +128,7 @@ def _stringify_content(content: Any) -> str:
     return json.dumps(content, default=str)
 
 
-def _tool_input_summary(name: str, inp: dict[str, Any]) -> str:
+def _tool_input_summary(name: str, inp: dict[str, Any]) -> str:  # noqa: PLR0911 (one return per known tool keeps the dispatch flat and obvious)
     if not isinstance(inp, dict):
         return ""
     if name == "Bash":
@@ -316,7 +316,7 @@ def _read_stderr(stream: IO[str], *, buffer: list[str], step_id: int | None) -> 
         stream.close()
 
 
-def run_step(
+def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, spawn, wait, parse, cleanup -- splitting fragments shared local state)
     prompt: str,
     *,
     cwd: Path,
