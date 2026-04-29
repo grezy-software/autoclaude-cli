@@ -217,6 +217,56 @@ def _flush_pending_setup_steps(
     return len(pending)
 
 
+_CLOSE_STEP_RETRY_ATTEMPTS = 3
+_CLOSE_STEP_RETRY_BACKOFF_SECONDS = 1.5
+
+
+def _close_step_with_retry(
+    client: ApiClient,
+    step_id: int,
+    *,
+    name: str,
+    summary: str,
+    error_log: str,
+    cost_usd: float | None = None,
+    token_cost_estimate: int | None = None,
+    ended_at: datetime | None = None,
+) -> bool:
+    """Close a TickStep, retrying transient failures (e.g. 502 from upstream).
+
+    A dropped close leaves the step "open" forever; the server then back-fills
+    it with a generic "step left open when tick closed" error during tick
+    close, masking the real outcome. Retrying a few times with a small backoff
+    covers proxy / cold-start blips without blocking the tick.
+    """
+    import time
+
+    kwargs: dict[str, Any] = {"summary": summary, "error_log": error_log}
+    if cost_usd is not None:
+        kwargs["cost_usd"] = cost_usd
+    if token_cost_estimate is not None:
+        kwargs["token_cost_estimate"] = token_cost_estimate
+    kwargs["ended_at"] = ended_at or _utcnow()
+
+    last_exc: ApiError | None = None
+    for attempt in range(1, _CLOSE_STEP_RETRY_ATTEMPTS + 1):
+        try:
+            client.close_step(step_id, **kwargs)
+            return True
+        except ApiError as exc:
+            last_exc = exc
+            if attempt < _CLOSE_STEP_RETRY_ATTEMPTS:
+                time.sleep(_CLOSE_STEP_RETRY_BACKOFF_SECONDS * attempt)
+    _log.warning(
+        "could not close %s step after %d attempts: %s",
+        name,
+        _CLOSE_STEP_RETRY_ATTEMPTS,
+        last_exc,
+        extra={"source": "cli"},
+    )
+    return False
+
+
 def _run_lifecycle_step(
     client: ApiClient,
     *,
@@ -262,15 +312,13 @@ def _run_lifecycle_step(
         error_log = str(exc)
         ok = False
 
-    try:
-        client.close_step(
-            step_id,
-            summary=summary,
-            error_log=error_log,
-            ended_at=_utcnow(),
-        )
-    except ApiError as exc:
-        _log.warning("could not close %s step: %s", name, exc, extra={"source": "cli"})
+    _close_step_with_retry(
+        client,
+        step_id,
+        name=name,
+        summary=summary,
+        error_log=error_log,
+    )
     return ok, summary if ok else error_log
 
 
@@ -359,18 +407,17 @@ def _execute_steps(  # noqa: PLR0911, PLR0915
                 "duration_ms": result.duration_ms,
             },
         )
-        try:
-            client.close_step(
-                step_id,
-                summary=summary,
-                error_log=error_log,
-                cost_usd=result.total_cost_usd,
-                token_cost_estimate=result.token_cost_estimate,
-            )
-        except ApiError as exc:
+        if not _close_step_with_retry(
+            client,
+            step_id,
+            name=f"agent::{agent}",
+            summary=summary,
+            error_log=error_log,
+            cost_usd=result.total_cost_usd,
+            token_cost_estimate=result.token_cost_estimate,
+        ):
             state.status = STATUS_FAILED
-            state.error = f"step_close {agent} -> {exc}"
-            _log.error("step close failed for %s: %s", agent, exc, extra={"source": "cli", "step_id": step_id})
+            state.error = f"step_close {agent} -> exhausted retries"
             return ordinal
         if result.token_exhausted:
             state.status = STATUS_TOKEN_EXHAUSTED
@@ -506,21 +553,15 @@ def _run_tool_steps(
             error_log = result.fail_reason
         else:
             error_log = (result.stderr or result.stdout)[-_ERROR_CHARS:]
-        try:
-            client.close_step(
-                tool_step_id,
-                summary=result.summary,
-                error_log=error_log,
-                cost_usd=result.total_cost_usd,
-                token_cost_estimate=result.token_cost_estimate,
-            )
-        except ApiError as exc:
-            _log.warning(
-                "tool step close failed for %s: %s",
-                slug,
-                exc,
-                extra={"source": "cli", "step_id": tool_step_id},
-            )
+        _close_step_with_retry(
+            client,
+            tool_step_id,
+            name=f"tool::{slug}",
+            summary=result.summary,
+            error_log=error_log,
+            cost_usd=result.total_cost_usd,
+            token_cost_estimate=result.token_cost_estimate,
+        )
         if result.token_exhausted:
             state.status = STATUS_TOKEN_EXHAUSTED
             state.error = "Claude subscription out of tokens."
