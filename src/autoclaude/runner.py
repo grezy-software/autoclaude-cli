@@ -283,15 +283,13 @@ def _execute_steps(  # noqa: PLR0911, PLR0915
     storage: RepoStorage,
     *,
     start_ordinal: int,
-    tools: list[dict[str, Any]] | None = None,
 ) -> int:
     """Run agent steps. Returns the ordinal immediately after the last one.
 
-    After each successful agent step, every tool listed in ``tools`` is
+    After each successful agent step, every tool listed on that step is
     dispatched as its own ``KIND_TOOL`` step (see :func:`_run_tool_steps`).
     Tool failures are non-fatal; only token exhaustion bubbles up.
     """
-    tool_refs = [t for t in (tools or []) if t.get("slug")]
     ordinal = start_ordinal - 1
     for step in steps:
         ordinal += 1
@@ -389,11 +387,12 @@ def _execute_steps(  # noqa: PLR0911, PLR0915
             _log.error("agent %s failed (rc != 0)", agent, extra={"source": "cli", "step_id": step_id})
             return ordinal
         state.outcomes.append(f"{agent}: ok")
-        if tool_refs:
+        step_tool_refs = [t for t in (step.get("tools") or []) if t.get("slug")]
+        if step_tool_refs:
             ordinal = _run_tool_steps(
                 client,
                 state,
-                tool_refs,
+                step_tool_refs,
                 repo_checkout,
                 shutdown_requested,
                 storage,
@@ -918,79 +917,82 @@ def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explic
                 shutdown_requested,
                 storage,
                 start_ordinal=agent_start_ordinal,
-                tools=plan.get("tools") or [],
             )
 
             cleanup_base = last_agent_ordinal + 1 if steps else agent_start_ordinal
 
-            def _do_branch_push() -> str:
-                # Push the worktree branch first so its URL is available when
-                # `_do_finalize` writes the tick summary, and so any agent
-                # comments referencing the URL resolve immediately. Best-effort:
-                # a push hiccup must not flip the tick to failed, since the
-                # work itself is already committed locally.
-                ahead = workspace.commits_ahead(worktree.path, base_ref)
-                if ahead == 0:
-                    return f"skipped: no commits ahead of {base_ref}"
-                url = workspace.push_branch(worktree.branch)
-                state.branch_url = url
-                return f"pushed {worktree.branch} -> {url}"
+            # Skip the branch_push + pr_open cleanup steps entirely when the
+            # worktree has no commits beyond base. Surfacing them as "done
+            # (skipped)" rows is noise: nothing was pushed, no PR is openable.
+            has_commits = workspace.commits_ahead(worktree.path, base_ref) > 0
 
-            _run_lifecycle_step(
-                client,
-                tick_id=state.tick_id,
-                kind=KIND_CLEANUP,
-                name=STEP_BRANCH_PUSH,
-                ordinal=cleanup_base,
-                action=f"git push -u origin {worktree.branch}",
-                work=_do_branch_push,
-            )
+            if has_commits:
+                def _do_branch_push() -> str:
+                    # Push the worktree branch so its URL is available when
+                    # `_do_finalize` writes the tick summary, and so any agent
+                    # comments referencing the URL resolve immediately. Best-effort:
+                    # a push hiccup must not flip the tick to failed, since the
+                    # work itself is already committed locally.
+                    url = workspace.push_branch(worktree.branch)
+                    state.branch_url = url
+                    return f"pushed {worktree.branch} -> {url}"
 
-            def _do_pr_open() -> str:
-                # Open a PR from the worktree branch back into the tick's base
-                # branch. Best-effort: skip when no base is declared (nothing
-                # sensible to target) or when there are no commits ahead of
-                # base (gh would error). A failed PR open must not flip the
-                # tick to failed -- the work is already pushed.
-                if not base_branch_input:
-                    return "skipped: no base_branch declared"
-                if not state.branch_url:
-                    return "skipped: branch_url unset (push did not succeed)"
-                try:
-                    pr_url = gh_helpers.pr_create(
-                        base=base_branch_input,
-                        head=worktree.branch,
-                        cwd=worktree.path,
-                    )
-                except GhError as exc:
-                    return f"skipped: {exc}"
-                state.pr_url = pr_url
-                outcome = f"opened PR {worktree.branch} -> {base_branch_input}: {pr_url}"
-                if auto_merge:
+                _run_lifecycle_step(
+                    client,
+                    tick_id=state.tick_id,
+                    kind=KIND_CLEANUP,
+                    name=STEP_BRANCH_PUSH,
+                    ordinal=cleanup_base,
+                    action=f"git push -u origin {worktree.branch}",
+                    work=_do_branch_push,
+                )
+
+            if has_commits:
+                def _do_pr_open() -> str:
+                    # Open a PR from the worktree branch back into the tick's base
+                    # branch. Best-effort: skip when no base is declared (nothing
+                    # sensible to target) or when push did not succeed. A failed
+                    # PR open must not flip the tick to failed -- the work is
+                    # already pushed.
+                    if not base_branch_input:
+                        return "skipped: no base_branch declared"
+                    if not state.branch_url:
+                        return "skipped: branch_url unset (push did not succeed)"
                     try:
-                        gh_helpers.pr_merge(
-                            pr_url=pr_url,
+                        pr_url = gh_helpers.pr_create(
+                            base=base_branch_input,
+                            head=worktree.branch,
                             cwd=worktree.path,
-                            method="squash",
-                            delete_branch=True,
                         )
                     except GhError as exc:
-                        return f"{outcome}; merge skipped: {exc}"
-                    outcome += " (merged + branch deleted)"
-                return outcome
+                        return f"skipped: {exc}"
+                    state.pr_url = pr_url
+                    outcome = f"opened PR {worktree.branch} -> {base_branch_input}: {pr_url}"
+                    if auto_merge:
+                        try:
+                            gh_helpers.pr_merge(
+                                pr_url=pr_url,
+                                cwd=worktree.path,
+                                method="squash",
+                                delete_branch=True,
+                            )
+                        except GhError as exc:
+                            return f"{outcome}; merge skipped: {exc}"
+                        outcome += " (merged + branch deleted)"
+                    return outcome
 
-            _run_lifecycle_step(
-                client,
-                tick_id=state.tick_id,
-                kind=KIND_CLEANUP,
-                name=STEP_PR_OPEN,
-                ordinal=cleanup_base + 1,
-                action=(
-                    f"gh pr create --base {base_branch_input} --head {worktree.branch} --fill"
-                    + (" && gh pr merge --squash --delete-branch" if auto_merge else "")
-                ),
-                work=_do_pr_open,
-            )
+                _run_lifecycle_step(
+                    client,
+                    tick_id=state.tick_id,
+                    kind=KIND_CLEANUP,
+                    name=STEP_PR_OPEN,
+                    ordinal=cleanup_base + 1,
+                    action=(
+                        f"gh pr create --base {base_branch_input} --head {worktree.branch} --fill"
+                        + (" && gh pr merge --squash --delete-branch" if auto_merge else "")
+                    ),
+                    work=_do_pr_open,
+                )
 
             def _do_finalize() -> str:
                 # Upload the file-tree snapshot before closing so the dashboard
