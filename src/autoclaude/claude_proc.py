@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import contextvars
 import threading
 import time
 from dataclasses import dataclass, field
@@ -356,15 +357,22 @@ def run_step(
         bufsize=1,
         env=subprocess_env,
     )
+    # Snapshot the calling context (e.g. the active profile contextvar) so the
+    # reader threads emit log lines tagged with the same profile as the parent
+    # tick. Without this, threads start with the contextvar default and every
+    # claude subprocess line shows up as ``[-]``. A ``Context`` cannot be
+    # entered from two threads at once, so each reader gets its own copy.
+    stdout_ctx = contextvars.copy_context()
+    stderr_ctx = contextvars.copy_context()
     stdout_thread = threading.Thread(
-        target=_read_stdout,
-        args=(proc.stdout,),
+        target=stdout_ctx.run,
+        args=(_read_stdout, proc.stdout),
         kwargs={"raw_buffer": stdout_buffer, "events": events, "step_id": step_id},
         daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=_read_stderr,
-        args=(proc.stderr,),
+        target=stderr_ctx.run,
+        args=(_read_stderr, proc.stderr),
         kwargs={"buffer": stderr_buffer, "step_id": step_id},
         daemon=True,
     )
