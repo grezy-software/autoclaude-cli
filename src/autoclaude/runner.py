@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import signal
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -239,8 +240,6 @@ def _close_step_with_retry(
     close, masking the real outcome. Retrying a few times with a small backoff
     covers proxy / cold-start blips without blocking the tick.
     """
-    import time
-
     kwargs: dict[str, Any] = {"summary": summary, "error_log": error_log}
     if cost_usd is not None:
         kwargs["cost_usd"] = cost_usd
@@ -252,11 +251,13 @@ def _close_step_with_retry(
     for attempt in range(1, _CLOSE_STEP_RETRY_ATTEMPTS + 1):
         try:
             client.close_step(step_id, **kwargs)
-            return True
         except ApiError as exc:
             last_exc = exc
             if attempt < _CLOSE_STEP_RETRY_ATTEMPTS:
                 time.sleep(_CLOSE_STEP_RETRY_BACKOFF_SECONDS * attempt)
+        else:
+            return True
+
     _log.warning(
         "could not close %s step after %d attempts: %s",
         name,
@@ -322,7 +323,7 @@ def _run_lifecycle_step(
     return ok, summary if ok else error_log
 
 
-def _execute_steps(  # noqa: PLR0911, PLR0915
+def _execute_steps(  # noqa: PLR0911
     client: ApiClient,
     state: _TickState,
     steps: list[dict[str, Any]],
@@ -823,7 +824,7 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
     return _run_tick_body(client, ctx=ctx, workspace=workspace, storage=storage, pending=pending)
 
 
-def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explicit step sequencing)
+def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
     client: ApiClient,
     *,
     ctx: dict[str, Any],
@@ -968,6 +969,7 @@ def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explic
             has_commits = workspace.commits_ahead(worktree.path, base_ref) > 0
 
             if has_commits:
+
                 def _do_branch_push() -> str:
                     # Push the worktree branch so its URL is available when
                     # `_do_finalize` writes the tick summary, and so any agent
@@ -989,6 +991,7 @@ def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explic
                 )
 
             if has_commits:
+
                 def _do_pr_open() -> str:
                     # Open a PR from the worktree branch back into the tick's base
                     # branch. Best-effort: skip when no base is declared (nothing
