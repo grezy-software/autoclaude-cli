@@ -1,3 +1,10 @@
+## [2.3.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.1...v2.3.2) (2026-04-29)
+
+
+### Bug Fixes
+
+* **claude_proc:** propagate logger context to reader threads ([d7d457a](https://github.com/grezy-software/autoclaude-cli/commit/d7d457a7d4bad44342f9fb56c2000ff8a5f83cc0))
+
 ## [2.3.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.0...v2.3.1) (2026-04-29)
 
 
