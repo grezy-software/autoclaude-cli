@@ -137,6 +137,8 @@ def run_step(
             "json",
             "--model",
             _AGENT_MODEL,
+            "--permission-mode",
+            "bypassPermissions",
         ],
         cwd=str(cwd),
         stdout=subprocess.PIPE,
