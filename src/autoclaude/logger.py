@@ -92,9 +92,13 @@ def _build_rich_handler() -> RichHandler:
     )
     handler.setLevel(logging.INFO)
     # RichHandler renders time + level itself; the formatter only controls
-    # the trailing message column, so we prepend ``[profile]`` here so it
-    # lands between the time/level columns and the message body.
-    handler.setFormatter(logging.Formatter(fmt="[%(profile)s] %(message)s"))
+    # the trailing message column, so we prepend the profile here so it
+    # lands between the time/level columns and the message body. The
+    # leading ``\\[`` escapes Rich's markup parser -- a bare ``[name]``
+    # would be swallowed as a style tag (e.g. ``[-]`` or ``[local]``
+    # disappear when ``markup=True``), so we emit a literal ``\\[`` that
+    # Rich renders as ``[``.
+    handler.setFormatter(logging.Formatter(fmt="\\[%(profile)s] %(message)s"))
     handler.addFilter(_ProfileFilter())
     return handler
 
