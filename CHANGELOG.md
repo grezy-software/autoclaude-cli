@@ -1,3 +1,10 @@
+# [2.3.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.2.0...v2.3.0) (2026-04-29)
+
+
+### Features
+
+* **claude_proc:** stream JSONL events to logger in real time ([f419126](https://github.com/grezy-software/autoclaude-cli/commit/f41912676f9b209328948651ba6a92a3ae7972a9))
+
 # [2.2.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.1.0...v2.2.0) (2026-04-29)
 
 
