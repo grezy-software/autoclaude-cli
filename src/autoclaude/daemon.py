@@ -47,25 +47,34 @@ CLAUDE_USAGE_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 class Daemon:
-    """One heartbeat loop tied to one ``ApiClient`` and one identity."""
+    """Heartbeat loop tied to one or more ``ApiClient`` instances.
+
+    On each cycle, every client heartbeats sequentially in registration
+    order. Per-client throttles (claude_usage shipping) are tracked
+    independently so adding a profile does not change shipping cadence
+    for the others.
+    """
 
     def __init__(
         self,
-        client: ApiClient,
+        clients: ApiClient | list[ApiClient],
         *,
         cli_version: str = "",
         interval: float = DEFAULT_INTERVAL_SECONDS,
         identity: InstallationIdentity | None = None,
     ) -> None:
-        self._client = client
+        self._clients: list[ApiClient] = [clients] if not isinstance(clients, list) else list(clients)
+        if not self._clients:
+            msg = "Daemon requires at least one client"
+            raise ValueError(msg)
         self._cli_version = cli_version
         self._interval = max(MIN_INTERVAL_SECONDS, min(interval, MAX_INTERVAL_SECONDS))
         self._identity = identity or get_or_create_identity()
         self._stop = threading.Event()
-        # Monotonic timestamp of the last successful heartbeat that included a
-        # claude_usage payload. Initialised to a sentinel that forces the next
-        # heartbeat to ship usage if any sample is available.
-        self._last_usage_sent_at: float = 0.0
+        # Per-client monotonic timestamp of the last claude_usage shipment.
+        # Tracked per-client so each server gets one sample per
+        # CLAUDE_USAGE_INTERVAL_SECONDS independently.
+        self._last_usage_sent_at: dict[int, float] = {id(c): 0.0 for c in self._clients}
         # Last tick-archive purge timestamp (monotonic). Throttled to once an
         # hour so a 30-second heartbeat does not spam the filesystem.
         self._last_archive_purge_at: float = 0.0
@@ -82,24 +91,29 @@ class Daemon:
         statusline_state = install_statusline()
         _log.info("claude statusline install: %s", statusline_state, extra={"source": "cli"})
         _log.info(
-            "daemon starting (installation=%s host=%s os=%s interval=%ss)",
+            "daemon starting (installation=%s host=%s os=%s interval=%ss clients=%d)",
             self._identity.installation_id,
             self._identity.hostname,
             self._identity.os_platform,
             self._interval,
+            len(self._clients),
             extra={"source": "cli"},
         )
         while not self._stop.is_set():
-            self._tick_once()
+            for client in self._clients:
+                if self._stop.is_set():
+                    break
+                self._tick_once(client)
             self._maybe_purge_archive()
             if self._stop.wait(self._interval):
                 break
         _log.info("daemon stopped", extra={"source": "cli"})
 
-    def _tick_once(self) -> None:
-        claude_usage = self._maybe_collect_claude_usage()
+    def _tick_once(self, client: ApiClient) -> None:
+        tag = f"[{client.profile.name}]"
+        claude_usage = self._maybe_collect_claude_usage(client)
         try:
-            response = self._client.heartbeat(
+            response = client.heartbeat(
                 installation_id=self._identity.installation_id,
                 hostname=self._identity.hostname,
                 os_platform=self._identity.os_platform,
@@ -107,10 +121,10 @@ class Daemon:
                 claude_usage=claude_usage,
             )
         except ApiError as exc:
-            _log.warning("heartbeat failed: %s", exc, extra={"source": "cli"})
+            _log.warning("%s heartbeat failed: %s", tag, exc, extra={"source": "cli"})
             return
         if claude_usage is not None:
-            self._last_usage_sent_at = time.monotonic()
+            self._last_usage_sent_at[id(client)] = time.monotonic()
 
         # Surface CLI version freshness via native notification + persisted state.
         # The foreground CLI reads the same state file to render an in-terminal
@@ -138,7 +152,7 @@ class Daemon:
             for task in tasks:
                 if not isinstance(task, dict):
                     continue
-                self._dispatch_task(task)
+                self._dispatch_task(client, task)
 
     def _maybe_purge_archive(self) -> None:
         elapsed = time.monotonic() - self._last_archive_purge_at
@@ -150,19 +164,21 @@ class Daemon:
             _log.debug("tick archive purge failed: %s", exc, extra={"source": "cli"})
         self._last_archive_purge_at = time.monotonic()
 
-    def _maybe_collect_claude_usage(self) -> dict | None:
-        """Read the latest cached rate_limits sample if it's our turn to ship.
+    def _maybe_collect_claude_usage(self, client: ApiClient) -> dict | None:
+        """Read the latest cached rate_limits sample if it's this client's turn to ship.
 
-        Throttles to ``CLAUDE_USAGE_INTERVAL_SECONDS`` so a 30-second daemon
-        cadence does not flood the server with duplicate rows. Returns None
-        when the sample is missing, stale, or we sent one recently.
+        Throttles per-client to ``CLAUDE_USAGE_INTERVAL_SECONDS`` so a
+        30-second daemon cadence does not flood any single server with
+        duplicate rows. Returns None when the sample is missing, stale,
+        or this client shipped one recently.
         """
-        elapsed = time.monotonic() - self._last_usage_sent_at
-        if self._last_usage_sent_at > 0 and elapsed < CLAUDE_USAGE_INTERVAL_SECONDS:
+        last = self._last_usage_sent_at.get(id(client), 0.0)
+        elapsed = time.monotonic() - last
+        if last > 0 and elapsed < CLAUDE_USAGE_INTERVAL_SECONDS:
             return None
         return read_latest_usage(max_age_seconds=CLAUDE_USAGE_MAX_AGE_SECONDS)
 
-    def _dispatch_task(self, task: dict[str, Any]) -> None:
+    def _dispatch_task(self, client: ApiClient, task: dict[str, Any]) -> None:
         task_id = task.get("id")
         task_type = task.get("task_type") or ""
         payload = task.get("payload") or {}
@@ -170,18 +186,19 @@ class Daemon:
             return
         handler = TASK_HANDLERS.get(task_type)
         if handler is None:
-            self._report(task_id, status="failed", error_log=f"unknown task_type: {task_type}")
+            self._report(client, task_id, status="failed", error_log=f"unknown task_type: {task_type}")
             return
         try:
-            result = handler(self._client, payload)
+            result = handler(client, payload)
         except Exception as exc:  # noqa: BLE001 (daemon swallows all handler errors)
             _log.exception("task %s (%s) failed: %s", task_id, task_type, exc, extra={"source": "cli"})
-            self._report(task_id, status="failed", error_log=str(exc))
+            self._report(client, task_id, status="failed", error_log=str(exc))
             return
-        self._report(task_id, status="fulfilled", result=result if isinstance(result, dict) else {})
+        self._report(client, task_id, status="fulfilled", result=result if isinstance(result, dict) else {})
 
     def _report(
         self,
+        client: ApiClient,
         task_id: int,
         *,
         status: str,
@@ -189,7 +206,7 @@ class Daemon:
         error_log: str = "",
     ) -> None:
         try:
-            self._client.runner_task_complete(
+            client.runner_task_complete(
                 task_id,
                 status=status,
                 result=result or {},
@@ -214,13 +231,13 @@ def _install_signal_handlers(daemon: Daemon) -> None:
 
 
 def run_daemon(
-    client: ApiClient,
+    clients: ApiClient | list[ApiClient],
     *,
     cli_version: str = "",
     interval: float = DEFAULT_INTERVAL_SECONDS,
 ) -> None:
     """Build and run a Daemon in the foreground until SIGINT/SIGTERM."""
-    daemon = Daemon(client, cli_version=cli_version, interval=interval)
+    daemon = Daemon(clients, cli_version=cli_version, interval=interval)
     _install_signal_handlers(daemon)
     daemon.run_forever()
 

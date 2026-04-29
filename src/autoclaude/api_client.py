@@ -111,6 +111,11 @@ class ApiClient:
         """Raw API key for the active profile. Used to build env vars for sub-tools."""
         return self._profile.api_key or ""
 
+    @property
+    def profile(self: Self) -> Profile:
+        """Profile this client speaks for. Used by multi-profile loops to log per-profile context."""
+        return self._profile
+
     def tracker_snapshot(self: Self) -> dict[str, str]:
         return self._tracker.snapshot()
 

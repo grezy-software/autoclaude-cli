@@ -35,18 +35,24 @@ MAX_INTERVAL_SECONDS = 24 * 60 * 60
 class Scheduler:
     """Run ticks on an interval. Single-threaded, lock-free.
 
-    Overlap protection is implicit: the loop sleeps *after* the tick
-    returns, so a long tick simply pushes the next start. No second tick
-    starts until the current one exits.
+    Accepts one or more ``ApiClient`` instances. On each cycle, every
+    client ticks sequentially in registration order before the loop
+    sleeps again. Overlap protection is implicit: the loop sleeps
+    *after* the cycle returns, so a slow profile simply pushes the next
+    start. The stop event is checked between profiles so SIGINT exits
+    promptly even mid-cycle.
     """
 
     def __init__(
         self,
-        client: ApiClient,
+        clients: ApiClient | list[ApiClient],
         *,
         interval: float = DEFAULT_INTERVAL_SECONDS,
     ) -> None:
-        self._client = client
+        self._clients: list[ApiClient] = [clients] if not isinstance(clients, list) else list(clients)
+        if not self._clients:
+            msg = "Scheduler requires at least one client"
+            raise ValueError(msg)
         self._interval = max(MIN_INTERVAL_SECONDS, min(interval, MAX_INTERVAL_SECONDS))
         self._stop = threading.Event()
 
@@ -54,26 +60,43 @@ class Scheduler:
         self._stop.set()
 
     def run_forever(self) -> None:
-        _log.info("scheduler starting (interval=%ss)", self._interval, extra={"source": "cli"})
+        _log.info(
+            "scheduler starting (interval=%ss, clients=%d)",
+            self._interval,
+            len(self._clients),
+            extra={"source": "cli"},
+        )
         while not self._stop.is_set():
-            self._run_one()
+            self._run_cycle()
             if self._stop.wait(self._interval):
                 break
         _log.info("scheduler stopped", extra={"source": "cli"})
 
-    def _run_one(self) -> None:
+    def _run_cycle(self) -> None:
+        for client in self._clients:
+            if self._stop.is_set():
+                return
+            self._run_one(client)
+
+    def _run_one(self, client: ApiClient) -> None:
+        tag = self._tag(client)
         with contextlib.suppress(Exception):
-            replay_pending(self._client)
+            replay_pending(client)
         try:
-            exit_code = runner_run_tick(self._client)
+            exit_code = runner_run_tick(client)
         except ApiError as exc:
-            _log.warning("scheduler tick api error: %s", exc, extra={"source": "cli"})
+            _log.warning("%s scheduler tick api error: %s", tag, exc, extra={"source": "cli"})
             return
         except Exception as exc:  # noqa: BLE001 (scheduler swallows everything to keep looping)
-            _log.exception("scheduler tick crashed: %s", exc, extra={"source": "cli"})
+            _log.exception("%s scheduler tick crashed: %s", tag, exc, extra={"source": "cli"})
             return
         if exit_code != 0:
-            _log.warning("scheduler tick exited %s", exit_code, extra={"source": "cli"})
+            _log.warning("%s scheduler tick exited %s", tag, exit_code, extra={"source": "cli"})
+
+    @staticmethod
+    def _tag(client: ApiClient) -> str:
+        name = getattr(getattr(client, "profile", None), "name", None) or "?"
+        return f"[{name}]"
 
 
 def _install_signal_handlers(scheduler: Scheduler) -> None:
@@ -85,12 +108,12 @@ def _install_signal_handlers(scheduler: Scheduler) -> None:
 
 
 def run_scheduler(
-    client: ApiClient,
+    clients: ApiClient | list[ApiClient],
     *,
     interval: float = DEFAULT_INTERVAL_SECONDS,
 ) -> None:
     """Build and run a Scheduler in the foreground until SIGINT/SIGTERM."""
-    scheduler = Scheduler(client, interval=interval)
+    scheduler = Scheduler(clients, interval=interval)
     _install_signal_handlers(scheduler)
     scheduler.run_forever()
 

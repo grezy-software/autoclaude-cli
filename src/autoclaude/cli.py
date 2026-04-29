@@ -141,6 +141,24 @@ def _load(ctx: typer.Context, profile_flag: str | None) -> tuple[Config, Profile
     return cfg, cfg.resolve(resolved)
 
 
+def _select_profiles(ctx: typer.Context, profile_flag: str | None) -> list[Profile]:
+    """Return the profiles a multi-profile command should run for.
+
+    With ``--profile`` set (here or on the parent command), restrict to
+    that single profile. Otherwise return every configured profile in
+    sorted name order so behaviour is deterministic across runs. Missing
+    config falls back to a single resolved profile so first-run users
+    still get a working command.
+    """
+    cfg = Config.load()
+    explicit = profile_flag or (ctx.obj or {}).get("profile")
+    if explicit:
+        return [cfg.resolve(explicit)]
+    if cfg.profiles:
+        return [cfg.resolve(name) for name in sorted(cfg.profiles)]
+    return [cfg.resolve(None)]
+
+
 @app.command()
 def login(
     ctx: typer.Context,
@@ -168,7 +186,7 @@ def login(
     _log.info("[green]saved profile %r[/green] -> %s", prof.name, prof.url, extra={"source": "cli"})
 
     try:
-        results = install_all(prof.name)
+        results = install_all()
     except ServiceInstallError as exc:
         _log.warning(
             "[yellow]service install failed[/yellow]: %s. Run `autoclaude install-services` to retry.",
@@ -183,29 +201,11 @@ def login(
                 extra={"source": "cli"},
             )
         _log.info(
-            "heartbeat running, scheduler ticking every %d minutes. "
+            "heartbeat running, scheduler ticking every %d minutes across all profiles. "
             "Use `autoclaude pause` to stop scheduled ticks.",
             int(SCHEDULER_DEFAULT_INTERVAL // 60),
             extra={"source": "cli"},
         )
-
-
-@app.command()
-def use(name: str) -> None:
-    """Set the active profile written to the config file."""
-    cfg = Config.load()
-    if name not in cfg.profiles:
-        _log.error(
-            "[red]unknown profile %r[/red]; known: %s",
-            name,
-            ", ".join(sorted(cfg.profiles)) or "[dim]none[/dim]",
-            extra={"source": "cli"},
-        )
-        raise typer.Exit(code=1)
-    cfg.active = name
-    cfg.save()
-    prof = cfg.profiles[name]
-    _log.info("[green]active profile -> %s[/green] (%s)", name, prof.url or "[dim]no url[/dim]", extra={"source": "cli"})
 
 
 @app.command(name="profiles")
@@ -322,42 +322,72 @@ def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
         _log.warning("[yellow]no active plan[/yellow]", extra={"source": "cli"})
 
 
-@app.command()
-def tick(
-    ctx: typer.Context,
-    profile: ProfileOption = None,
-) -> None:
-    """Run one tick.
+def _run_tick_for_profile(prof: Profile) -> int:
+    """Run one tick for ``prof``. Returns the runner exit code (0 on success).
 
-    The project's GitHub repo (resolved from the server-side runner
-    context) is cloned into ``$AUTOCLAUDE_HOME/repos/<slug>/`` and each
-    tick runs inside a dedicated git worktree on its own branch. No
-    local checkout is involved -- ``autoclaude tick`` can be run from
-    any directory.
+    Each profile owns its own ``ApiClient``, so credentials and HTTP
+    sessions stay isolated even when called back-to-back.
     """
-    _cfg, prof = _load(ctx, profile)
+    tag = f"[{prof.name}]"
     try:
         with ApiClient(prof, cli_version=__version__) as client:
             with contextlib.suppress(Exception):
                 replay_pending(client)
             exit_code = runner_run_tick(client)
     except ApiError as exc:
-        _log.error("[red]api error[/red]: %s", exc, extra={"source": "cli"})
-        raise typer.Exit(code=1) from exc
+        _log.error("%s [red]api error[/red]: %s", tag, exc, extra={"source": "cli"})
+        return 1
     if exit_code == EXIT_TOKEN_EXHAUSTED:
         _log.error(
-            "[red]Claude subscription out of tokens.[/red] Top up at %s then re-run `autoclaude tick`. "
-            "This tick was not counted against your hourly limit.",
+            "%s [red]Claude subscription out of tokens.[/red] Top up at %s then re-run.",
+            tag,
             CLAUDE_BILLING_URL,
             extra={"source": "cli"},
         )
     elif exit_code == EXIT_ABANDONED:
         _log.warning(
-            "[yellow]tick abandoned via shutdown signal; server will accept the next tick as a resume.[/yellow]",
+            "%s [yellow]tick abandoned; server will accept the next tick as a resume.[/yellow]",
+            tag,
             extra={"source": "cli"},
         )
-    if exit_code != 0:
-        raise typer.Exit(code=exit_code)
+    return exit_code
+
+
+@app.command()
+def tick(
+    ctx: typer.Context,
+    profile: ProfileOption = None,
+) -> None:
+    """Run one tick per configured profile, sequentially.
+
+    Default behaviour iterates every profile in sorted name order so a
+    single ``autoclaude tick`` drains queues across local + production
+    in one pass. Pass ``--profile X`` to restrict to a single profile.
+
+    Each profile clones into its own ``$AUTOCLAUDE_HOME/repos/<slug>/``
+    and ticks inside a dedicated git worktree on its own branch. No
+    local checkout is involved.
+    """
+    selected = _select_profiles(ctx, profile)
+    if len(selected) > 1:
+        _log.info(
+            "[bold]ticking %d profiles:[/bold] %s",
+            len(selected),
+            ", ".join(p.name for p in selected),
+            extra={"source": "cli"},
+        )
+    results: dict[str, int] = {}
+    for prof in selected:
+        results[prof.name] = _run_tick_for_profile(prof)
+
+    if len(selected) > 1:
+        for name, code in results.items():
+            marker = "[green]ok[/green]" if code == 0 else f"[red]exit={code}[/red]"
+            _log.info("%s -> %s", name, marker, extra={"source": "cli"})
+
+    worst = max(results.values()) if results else 0
+    if worst != 0:
+        raise typer.Exit(code=worst)
 
 
 @app.command()
@@ -444,14 +474,16 @@ def daemon(
 ) -> None:
     """Run the background heartbeat in the foreground.
 
-    Normally launched by the per-user service installed via
-    ``autoclaude login`` (or ``autoclaude install-services``). Run it
-    manually to debug locally; SIGINT/SIGTERM exits cleanly.
+    Heartbeats every configured profile sequentially per cycle. Pass
+    ``--profile X`` to restrict to a single profile. Normally launched
+    by the per-user service installed via ``autoclaude login`` (or
+    ``autoclaude install-services``); SIGINT/SIGTERM exits cleanly.
     """
-    _cfg, prof = _load(ctx, profile)
+    selected = _select_profiles(ctx, profile)
     try:
-        with ApiClient(prof, cli_version=__version__) as client:
-            run_daemon(client, cli_version=__version__, interval=interval)
+        with contextlib.ExitStack() as stack:
+            clients = [stack.enter_context(ApiClient(p, cli_version=__version__)) for p in selected]
+            run_daemon(clients, cli_version=__version__, interval=interval)
     except ApiError as exc:
         _log.error("[red]daemon api error[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
@@ -471,25 +503,30 @@ def scheduler(
 ) -> None:
     """Run the periodic tick scheduler in the foreground.
 
-    Normally launched by the per-user service installed via
-    ``autoclaude login`` (or ``autoclaude install-services``). Run it
-    manually to debug locally; SIGINT/SIGTERM exits cleanly.
+    Each cycle ticks every configured profile sequentially. Pass
+    ``--profile X`` to restrict to a single profile. Normally launched
+    by the per-user service installed via ``autoclaude login`` (or
+    ``autoclaude install-services``); SIGINT/SIGTERM exits cleanly.
     """
-    _cfg, prof = _load(ctx, profile)
+    selected = _select_profiles(ctx, profile)
     try:
-        with ApiClient(prof, cli_version=__version__) as client:
-            run_scheduler(client, interval=interval)
+        with contextlib.ExitStack() as stack:
+            clients = [stack.enter_context(ApiClient(p, cli_version=__version__)) for p in selected]
+            run_scheduler(clients, interval=interval)
     except ApiError as exc:
         _log.error("[red]scheduler api error[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
 
 
 @app.command(name="install-services")
-def install_services(ctx: typer.Context, profile: ProfileOption = None) -> None:
-    """Register heartbeat + scheduler as per-user services."""
-    _cfg, prof = _load(ctx, profile)
+def install_services() -> None:
+    """Register heartbeat + scheduler as per-user services.
+
+    Both services run all configured profiles sequentially per cycle, so
+    no profile binding is needed at install time.
+    """
     try:
-        results = install_all(prof.name)
+        results = install_all()
     except ServiceInstallError as exc:
         _log.error("[red]install failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
@@ -611,50 +648,14 @@ def pause() -> None:
 
 
 @app.command()
-def play(ctx: typer.Context, profile: ProfileOption = None) -> None:
+def play() -> None:
     """Resume the scheduler."""
-    _cfg, prof = _load(ctx, profile)
     try:
-        result = play_scheduler(prof.name)
+        result = play_scheduler()
     except ServiceInstallError as exc:
         _log.error("[red]play failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
     _log.info("[green]scheduler running[/green] (%s)", result.detail, extra={"source": "cli"})
-
-
-@app.command()
-def switch(name: str) -> None:
-    """Switch active profile and rebind both services to it."""
-    cfg = Config.load()
-    if name not in cfg.profiles:
-        _log.error(
-            "[red]unknown profile %r[/red]; known: %s. Run `autoclaude login --profile %s` first.",
-            name,
-            ", ".join(sorted(cfg.profiles)) or "[dim]none[/dim]",
-            name,
-            extra={"source": "cli"},
-        )
-        raise typer.Exit(code=1)
-    cfg.active = name
-    cfg.save()
-    prof = cfg.profiles[name]
-    _log.info(
-        "[green]active profile -> %s[/green] (%s)",
-        name,
-        prof.url or "[dim]no url[/dim]",
-        extra={"source": "cli"},
-    )
-    try:
-        results = install_all(prof.name)
-    except ServiceInstallError as exc:
-        _log.warning(
-            "[yellow]service rebind failed[/yellow]: %s. Run `autoclaude install-services` to retry.",
-            exc,
-            extra={"source": "cli"},
-        )
-        return
-    for result in results:
-        _log.info("[green]rebound[/green] (%s)", result.detail, extra={"source": "cli"})
 
 
 task_app = typer.Typer(

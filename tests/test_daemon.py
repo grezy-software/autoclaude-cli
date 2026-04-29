@@ -13,6 +13,10 @@ from autoclaude.daemon import MIN_INTERVAL_SECONDS, Daemon
 from autoclaude.installation import InstallationIdentity
 
 
+class _FakeProfile:
+    name = "test"
+
+
 class _FakeClient:
     def __init__(self, *, tasks_per_call: list[list[dict[str, Any]]] | None = None) -> None:
         self.heartbeat_calls: list[dict[str, Any]] = []
@@ -20,6 +24,7 @@ class _FakeClient:
         self.fulfilled: list[dict[str, Any]] = []
         self._tasks = tasks_per_call or []
         self._lock = threading.Lock()
+        self.profile = _FakeProfile()
 
     def heartbeat(self, **kwargs: Any) -> dict[str, Any]:
         with self._lock:
