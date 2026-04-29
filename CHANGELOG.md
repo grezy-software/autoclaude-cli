@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.0.0...v2.1.0) (2026-04-29)
+
+
+### Features
+
+* **logger:** tag log lines with active profile ([ceab4f6](https://github.com/grezy-software/autoclaude-cli/commit/ceab4f63a97d1f540321f67dc75d75fa6906b654))
+
 # [2.0.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.5...v2.0.0) (2026-04-29)
 
 
