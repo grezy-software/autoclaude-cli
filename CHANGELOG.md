@@ -1,3 +1,11 @@
+# [1.21.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.20.1...v1.21.0) (2026-04-28)
+
+
+### Features
+
+* **gh:** add pr_create + pr_merge helpers ([c79b1c9](https://github.com/grezy-software/autoclaude-cli/commit/c79b1c9b8148f8278a95d6e866f614fccf4a460a))
+* **runner:** drop FileLock, handle server 409 on tick_open ([7b84174](https://github.com/grezy-software/autoclaude-cli/commit/7b84174473f2af0962ff671d1decf0a542c83642))
+
 ## [1.20.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.20.0...v1.20.1) (2026-04-28)
 
 
