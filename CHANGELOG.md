@@ -1,3 +1,10 @@
+## [2.3.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.0...v2.3.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **logger:** escape profile bracket so Rich does not swallow it ([826d708](https://github.com/grezy-software/autoclaude-cli/commit/826d708786be9dd8640cedf38a62fe961858fe29))
+
 # [2.3.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.2.0...v2.3.0) (2026-04-29)
 
 
