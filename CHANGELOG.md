@@ -1,3 +1,10 @@
+# [2.4.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.2...v2.4.0) (2026-04-29)
+
+
+### Features
+
+* **runner:** expose AUTOCLAUDE_TICK_ID to step subprocess env ([a09ddc6](https://github.com/grezy-software/autoclaude-cli/commit/a09ddc6c216a8dffa8c3d5910ee213847fd0ff94))
+
 ## [2.3.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.1...v2.3.2) (2026-04-29)
 
 
