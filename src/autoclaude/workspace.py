@@ -255,6 +255,18 @@ class Workspace:
         _log.info("pushed %s -> %s", branch, url, extra={"source": "workspace"})
         return url
 
+    def commits_ahead(self, worktree_path: Path, base_ref: str) -> int:
+        """Return number of commits on ``HEAD`` not in ``base_ref``.
+
+        Used to decide whether a branch push is meaningful: if HEAD has
+        no commits beyond the base, there is nothing to publish.
+        """
+        result = _git(
+            ["rev-list", "--count", f"{base_ref}..HEAD"],
+            cwd=worktree_path,
+        )
+        return int(result.stdout.strip() or "0")
+
     def branch_url(self, branch: str) -> str:
         """Return the GitHub web URL for ``branch`` on this workspace's repo.
 

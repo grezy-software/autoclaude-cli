@@ -59,7 +59,7 @@ _BLOCKING_EXEMPT_COMMANDS = frozenset({"version", "update-check", "uninstall-ser
 
 CLAUDE_BILLING_URL = "https://console.anthropic.com/settings/plans"
 
-API_KEYS_PATH = "/logged-in/settings/api-keys"
+API_KEYS_PATH = "/logged-in/api"
 
 app = typer.Typer(add_completion=False, help="Local runner for AutoClaude.")
 _log = get_logger("cli")

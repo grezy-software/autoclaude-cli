@@ -929,6 +929,9 @@ def _run_tick_body(  # noqa: PLR0911, PLR0915, C901 (exit-code dispatch + explic
                 # comments referencing the URL resolve immediately. Best-effort:
                 # a push hiccup must not flip the tick to failed, since the
                 # work itself is already committed locally.
+                ahead = workspace.commits_ahead(worktree.path, base_ref)
+                if ahead == 0:
+                    return f"skipped: no commits ahead of {base_ref}"
                 url = workspace.push_branch(worktree.branch)
                 state.branch_url = url
                 return f"pushed {worktree.branch} -> {url}"
