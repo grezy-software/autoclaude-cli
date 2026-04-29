@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from autoclaude.api_client import ApiError
 from autoclaude.log_uploader import replay_pending
-from autoclaude.logger import get_logger
+from autoclaude.logger import get_logger, profile_context
 from autoclaude.runner import run_tick as runner_run_tick
 
 if TYPE_CHECKING:
@@ -76,27 +76,23 @@ class Scheduler:
         for client in self._clients:
             if self._stop.is_set():
                 return
-            self._run_one(client)
+            name = getattr(getattr(client, "profile", None), "name", None) or "?"
+            with profile_context(name):
+                self._run_one(client)
 
     def _run_one(self, client: ApiClient) -> None:
-        tag = self._tag(client)
         with contextlib.suppress(Exception):
             replay_pending(client)
         try:
             exit_code = runner_run_tick(client)
         except ApiError as exc:
-            _log.warning("%s scheduler tick api error: %s", tag, exc, extra={"source": "cli"})
+            _log.warning("scheduler tick api error: %s", exc, extra={"source": "cli"})
             return
         except Exception as exc:  # noqa: BLE001 (scheduler swallows everything to keep looping)
-            _log.exception("%s scheduler tick crashed: %s", tag, exc, extra={"source": "cli"})
+            _log.exception("scheduler tick crashed: %s", exc, extra={"source": "cli"})
             return
         if exit_code != 0:
-            _log.warning("%s scheduler tick exited %s", tag, exit_code, extra={"source": "cli"})
-
-    @staticmethod
-    def _tag(client: ApiClient) -> str:
-        name = getattr(getattr(client, "profile", None), "name", None) or "?"
-        return f"[{name}]"
+            _log.warning("scheduler tick exited %s", exit_code, extra={"source": "cli"})
 
 
 def _install_signal_handlers(scheduler: Scheduler) -> None:

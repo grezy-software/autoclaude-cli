@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from autoclaude.api_client import ApiError
 from autoclaude.installation import InstallationIdentity, get_or_create_identity
-from autoclaude.logger import get_logger
+from autoclaude.logger import get_logger, profile_context
 from autoclaude.task_handlers import TASK_HANDLERS
 from autoclaude.tick_archive import purge_expired
 from autoclaude.update_check import apply_heartbeat_response, maybe_notify
@@ -103,14 +103,14 @@ class Daemon:
             for client in self._clients:
                 if self._stop.is_set():
                     break
-                self._tick_once(client)
+                with profile_context(client.profile.name):
+                    self._tick_once(client)
             self._maybe_purge_archive()
             if self._stop.wait(self._interval):
                 break
         _log.info("daemon stopped", extra={"source": "cli"})
 
     def _tick_once(self, client: ApiClient) -> None:
-        tag = f"[{client.profile.name}]"
         claude_usage = self._maybe_collect_claude_usage(client)
         try:
             response = client.heartbeat(
@@ -121,7 +121,7 @@ class Daemon:
                 claude_usage=claude_usage,
             )
         except ApiError as exc:
-            _log.warning("%s heartbeat failed: %s", tag, exc, extra={"source": "cli"})
+            _log.warning("heartbeat failed: %s", exc, extra={"source": "cli"})
             return
         if claude_usage is not None:
             self._last_usage_sent_at[id(client)] = time.monotonic()

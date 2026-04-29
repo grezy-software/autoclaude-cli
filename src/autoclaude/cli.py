@@ -20,7 +20,7 @@ from autoclaude.daemon import run_daemon
 from autoclaude.gh import is_authenticated as gh_is_authenticated
 from autoclaude.gh import is_installed as gh_is_installed
 from autoclaude.log_uploader import replay_pending
-from autoclaude.logger import get_logger
+from autoclaude.logger import get_logger, profile_context
 from autoclaude.runner import (
     EXIT_ABANDONED,
     EXIT_TOKEN_EXHAUSTED,
@@ -326,31 +326,31 @@ def _run_tick_for_profile(prof: Profile) -> int:
     """Run one tick for ``prof``. Returns the runner exit code (0 on success).
 
     Each profile owns its own ``ApiClient``, so credentials and HTTP
-    sessions stay isolated even when called back-to-back.
+    sessions stay isolated even when called back-to-back. The active
+    profile is set on the logger context so every line emitted during
+    this call carries the profile tag.
     """
-    tag = f"[{prof.name}]"
-    try:
-        with ApiClient(prof, cli_version=__version__) as client:
-            with contextlib.suppress(Exception):
-                replay_pending(client)
-            exit_code = runner_run_tick(client)
-    except ApiError as exc:
-        _log.error("%s [red]api error[/red]: %s", tag, exc, extra={"source": "cli"})
-        return 1
-    if exit_code == EXIT_TOKEN_EXHAUSTED:
-        _log.error(
-            "%s [red]Claude subscription out of tokens.[/red] Top up at %s then re-run.",
-            tag,
-            CLAUDE_BILLING_URL,
-            extra={"source": "cli"},
-        )
-    elif exit_code == EXIT_ABANDONED:
-        _log.warning(
-            "%s [yellow]tick abandoned; server will accept the next tick as a resume.[/yellow]",
-            tag,
-            extra={"source": "cli"},
-        )
-    return exit_code
+    with profile_context(prof.name):
+        try:
+            with ApiClient(prof, cli_version=__version__) as client:
+                with contextlib.suppress(Exception):
+                    replay_pending(client)
+                exit_code = runner_run_tick(client)
+        except ApiError as exc:
+            _log.error("[red]api error[/red]: %s", exc, extra={"source": "cli"})
+            return 1
+        if exit_code == EXIT_TOKEN_EXHAUSTED:
+            _log.error(
+                "[red]Claude subscription out of tokens.[/red] Top up at %s then re-run.",
+                CLAUDE_BILLING_URL,
+                extra={"source": "cli"},
+            )
+        elif exit_code == EXIT_ABANDONED:
+            _log.warning(
+                "[yellow]tick abandoned; server will accept the next tick as a resume.[/yellow]",
+                extra={"source": "cli"},
+            )
+        return exit_code
 
 
 @app.command()
