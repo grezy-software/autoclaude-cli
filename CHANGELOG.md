@@ -1,3 +1,10 @@
+## [1.21.1](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.0...v1.21.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **url:** autoclaude.grezy.org ([9e8fa27](https://github.com/grezy-software/autoclaude-cli/commit/9e8fa277f47ea33be6b403db3008f8b88c464bd5))
+
 # [1.21.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.20.1...v1.21.0) (2026-04-28)
 
 
