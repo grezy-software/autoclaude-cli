@@ -1,3 +1,10 @@
+## [1.21.5](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.4...v1.21.5) (2026-04-29)
+
+
+### Bug Fixes
+
+* **gh:** permission mode to bypassPermission by default ([6547819](https://github.com/grezy-software/autoclaude-cli/commit/6547819c46610284e6dbca70c6b7c17c80d32a8e))
+
 ## [1.21.4](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.3...v1.21.4) (2026-04-29)
 
 
