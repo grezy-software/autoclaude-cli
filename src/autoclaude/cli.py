@@ -299,27 +299,37 @@ def _report_protocol_state(client: ApiClient) -> None:
 
 @app.command()
 def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
-    """Print the active profile and the last tick summary."""
-    _cfg, prof = _load(ctx, profile)
-    _log.info("profile: %s", prof.name, extra={"source": "cli"})
-    _log.info("url: %s", prof.url, extra={"source": "cli"})
-    try:
-        with ApiClient(prof, cli_version=__version__) as client:
-            api_ctx = client.context()
-    except ApiError as exc:
-        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
-        raise typer.Exit(code=1) from exc
-    plan = api_ctx.get("plan")
-    if plan:
-        _log.info(
-            "next job: #%s (%s steps, mode=%s)",
-            plan.get("job_id"),
-            len(plan.get("steps") or []),
-            plan.get("mode"),
-            extra={"source": "cli"},
-        )
-    else:
-        _log.warning("[yellow]no active plan[/yellow]", extra={"source": "cli"})
+    """Print the next-job summary for every configured profile.
+
+    Iterates profiles in sorted name order so a single ``autoclaude
+    status`` covers local + production. Pass ``--profile X`` to restrict
+    to one profile.
+    """
+    selected = _select_profiles(ctx, profile)
+    failures = 0
+    for prof in selected:
+        with profile_context(prof.name):
+            _log.info("url: %s", prof.url, extra={"source": "cli"})
+            try:
+                with ApiClient(prof, cli_version=__version__) as client:
+                    api_ctx = client.context()
+            except ApiError as exc:
+                _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
+                failures += 1
+                continue
+            plan = api_ctx.get("plan")
+            if plan:
+                _log.info(
+                    "next job: #%s (%s steps, mode=%s)",
+                    plan.get("job_id"),
+                    len(plan.get("steps") or []),
+                    plan.get("mode"),
+                    extra={"source": "cli"},
+                )
+            else:
+                _log.warning("[yellow]no active plan[/yellow]", extra={"source": "cli"})
+    if failures and failures == len(selected):
+        raise typer.Exit(code=1)
 
 
 def _run_tick_for_profile(prof: Profile) -> int:
