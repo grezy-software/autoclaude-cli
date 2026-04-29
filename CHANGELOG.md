@@ -1,3 +1,10 @@
+## [1.21.4](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.3...v1.21.4) (2026-04-29)
+
+
+### Bug Fixes
+
+* **runner:** retry close_step on transient ApiError ([8504550](https://github.com/grezy-software/autoclaude-cli/commit/8504550c2cc27fdd3783314374dba20d3472831c))
+
 ## [1.21.3](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.2...v1.21.3) (2026-04-29)
 
 
