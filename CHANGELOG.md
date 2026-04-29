@@ -1,3 +1,24 @@
+# [2.0.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.5...v2.0.0) (2026-04-29)
+
+
+### Bug Fixes
+
+* **workspace:** drop stale branch before recreating tick worktree ([1c71932](https://github.com/grezy-software/autoclaude-cli/commit/1c719320677683eec2d8cefaea2c037d756ed77a))
+
+
+### Features
+
+* **cli:** tick all profiles sequentially by default ([697c485](https://github.com/grezy-software/autoclaude-cli/commit/697c4859b1f9e6d2be20435537c5f2915f83ce4c))
+
+
+### BREAKING CHANGES
+
+* **cli:** `install_service`, `install_all`, `play_scheduler`,
+and the platform-specific install helpers no longer take a profile
+argument. The `use` and `switch` CLI commands are gone.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## [1.21.5](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.4...v1.21.5) (2026-04-29)
 
 
