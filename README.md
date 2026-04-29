@@ -39,7 +39,7 @@ uv tool install --force .      # or: pipx install --force ./
 ## Quickstart
 
 ```bash
-# 1. Authenticate once. Defaults to https://app.grezy.com.
+# 1. Authenticate once. Defaults to https://autoclaude.grezy.org.
 #    Login also installs two per-user services:
 #      - heartbeat  (always-on liveness ping; never paused)
 #      - scheduler  (runs `autoclaude tick` every 15 minutes)

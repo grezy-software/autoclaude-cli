@@ -19,7 +19,7 @@ import tomli_w
 
 APP_NAME = "autoclaude"
 
-DEFAULT_URL = "https://app.grezy.com"
+DEFAULT_URL = "https://autoclaude.grezy.org"
 DEFAULT_PROFILE = "default"
 
 
