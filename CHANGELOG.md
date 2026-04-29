@@ -1,3 +1,10 @@
+## [1.21.3](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.2...v1.21.3) (2026-04-29)
+
+
+### Bug Fixes
+
+* **cleanup:** skip branch_push and pr_open when no commits ahead of base ([2d52fc0](https://github.com/grezy-software/autoclaude-cli/commit/2d52fc0cb6d42c5057351a1a2df5b1709e63f13e))
+
 ## [1.21.2](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.1...v1.21.2) (2026-04-29)
 
 
