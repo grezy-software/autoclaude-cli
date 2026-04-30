@@ -1,3 +1,11 @@
+# [2.5.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.7...v2.5.0) (2026-04-30)
+
+
+### Features
+
+* **claude_proc:** log wrapped command on subprocess failure ([bbae338](https://github.com/grezy-software/autoclaude-cli/commit/bbae338e9997e55ad1e2fbf04d6b950ea0d6db3b))
+* **status:** surface local autoclaude state per profile ([3e3f89f](https://github.com/grezy-software/autoclaude-cli/commit/3e3f89f790c8ac4273d827cce6760f924b3d93d5))
+
 ## [2.4.7](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.6...v2.4.7) (2026-04-30)
 
 
