@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
 import pytest
 
 from autoclaude import cli
 from autoclaude.config import Profile
+from autoclaude.scheduler import DEFAULT_INTERVAL_SECONDS as SCHEDULER_DEFAULT_INTERVAL
 from autoclaude.service_install import InstallResult, ServiceInstallError
 
 
@@ -93,3 +98,72 @@ def test_resolve_status_handles_service_install_error(monkeypatch: pytest.Monkey
     level, label = cli._resolve_autoclaude_status(prof)  # noqa: SLF001
     assert level == "paused"
     assert "error: systemctl missing" in label
+
+
+def _write_last_tick(root: Path, ended_at: datetime) -> None:
+    state_dir = root / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"ended_at": ended_at.isoformat().replace("+00:00", "Z")}
+    (state_dir / "last_tick.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_resolve_next_tick_returns_eta_when_running(tmp_path: Path) -> None:
+    ended_at = datetime.now(tz=UTC) - timedelta(seconds=SCHEDULER_DEFAULT_INTERVAL - 60)
+    _write_last_tick(tmp_path, ended_at)
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    color, label = cli._resolve_next_tick(prof, "running")  # noqa: SLF001
+    assert color == "green"
+    assert label.startswith("in ")
+    assert "local)" in label
+
+
+def test_resolve_next_tick_due_now_when_overdue(tmp_path: Path) -> None:
+    ended_at = datetime.now(tz=UTC) - timedelta(seconds=SCHEDULER_DEFAULT_INTERVAL * 2)
+    _write_last_tick(tmp_path, ended_at)
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    color, label = cli._resolve_next_tick(prof, "running")  # noqa: SLF001
+    assert color == "yellow"
+    assert label.startswith("due now")
+
+
+def test_resolve_next_tick_pending_when_no_history(tmp_path: Path) -> None:
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    color, label = cli._resolve_next_tick(prof, "running")  # noqa: SLF001
+    assert color == "dim"
+    assert "pending" in label
+
+
+def test_resolve_next_tick_paused_profile(tmp_path: Path) -> None:
+    ended_at = datetime.now(tz=UTC)
+    _write_last_tick(tmp_path, ended_at)
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=True)
+    color, label = cli._resolve_next_tick(prof, "paused")  # noqa: SLF001
+    assert color == "yellow"
+    assert "profile paused" in label
+
+
+def test_resolve_next_tick_scheduler_stopped(tmp_path: Path) -> None:
+    ended_at = datetime.now(tz=UTC)
+    _write_last_tick(tmp_path, ended_at)
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    color, label = cli._resolve_next_tick(prof, "paused")  # noqa: SLF001
+    assert color == "yellow"
+    assert "scheduler stopped" in label
+
+
+def test_resolve_next_tick_degraded_still_estimates(tmp_path: Path) -> None:
+    """Degraded means heartbeat is dark, but the scheduler still ticks."""
+    ended_at = datetime.now(tz=UTC) - timedelta(seconds=60)
+    _write_last_tick(tmp_path, ended_at)
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    color, label = cli._resolve_next_tick(prof, "degraded")  # noqa: SLF001
+    assert color in {"green", "yellow"}
+    assert "scheduler stopped" not in label
+    assert "profile paused" not in label
+
+
+def test_format_relative_seconds_compact() -> None:
+    assert cli._format_relative_seconds(0) == "now"  # noqa: SLF001
+    assert cli._format_relative_seconds(45) == "45s"  # noqa: SLF001
+    assert cli._format_relative_seconds(125) == "2m05s"  # noqa: SLF001
+    assert cli._format_relative_seconds(3700) == "1h01m"  # noqa: SLF001

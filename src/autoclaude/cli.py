@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import webbrowser
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -333,6 +334,61 @@ def _service_state(kind: str) -> str:
         return f"error: {exc}"
 
 
+def _format_relative_seconds(seconds: float) -> str:
+    """Render ``seconds`` as a compact human-readable delta (e.g. ``8m12s``)."""
+    total = round(seconds)
+    if total <= 0:
+        return "now"
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+def _resolve_next_tick(prof: Profile, level: str) -> tuple[str, str]:
+    """Summarise when the scheduler will fire the next tick for ``prof``.
+
+    Returns ``(color, label)``. The label answers a single operator
+    question: "when will an automatic tick run next?". It folds in the
+    states that prevent ticks (scheduler stopped, profile paused) so the
+    line is always actionable.
+
+    The next-tick estimate is ``last_tick.ended_at + scheduler interval``.
+    The scheduler sleeps *after* a cycle returns, so this matches the real
+    wake-up time within one tick duration. When no tick has been recorded
+    yet we cannot know the cycle phase, so we fall back to a generic
+    "pending" label rather than guess.
+    """
+    if prof.paused:
+        return "yellow", "ticks skipped (profile paused)"
+    if level not in {"running", "degraded"}:
+        return "yellow", "scheduler stopped"
+
+    storage = RepoStorage.from_autoclaude_root(prof.resolve_autoclaude_root())
+    last_tick = storage.read_last_tick()
+    ended_at_raw = (last_tick or {}).get("ended_at")
+    if not ended_at_raw:
+        return "dim", "pending (no recorded tick yet)"
+
+    raw = str(ended_at_raw)
+    parseable = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        ended_at = datetime.fromisoformat(parseable)
+    except ValueError:
+        return "dim", f"unknown (unparseable ended_at={ended_at_raw!r})"
+
+    next_at_utc = ended_at + timedelta(seconds=SCHEDULER_DEFAULT_INTERVAL)
+    now_utc = datetime.now(tz=UTC)
+    delta = (next_at_utc - now_utc).total_seconds()
+    next_at_local = next_at_utc.astimezone().strftime("%H:%M:%S")
+    if delta <= 0:
+        return "yellow", f"due now (was scheduled at {next_at_local})"
+    return "green", f"in {_format_relative_seconds(delta)} (at {next_at_local} local)"
+
+
 def _resolve_autoclaude_status(prof: Profile) -> tuple[str, str]:
     """Summarise local autoclaude state for ``prof``.
 
@@ -396,6 +452,8 @@ def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
             color = {"running": "green", "paused": "yellow", "degraded": "yellow"}.get(level, "yellow")
             log_fn = _log.info if level == "running" else _log.warning
             log_fn("autoclaude: [%s]%s[/%s]", color, label, color, extra={"source": "cli"})
+            next_color, next_label = _resolve_next_tick(prof, level)
+            _log.info("next tick: [%s]%s[/%s]", next_color, next_label, next_color, extra={"source": "cli"})
             try:
                 with ApiClient(prof, cli_version=__version__) as client:
                     api_ctx = client.context()
