@@ -864,7 +864,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         return EXIT_OK
 
     tool_reconcile_started = _utcnow()
-    applied_tool_count = _reconcile_tools(client, plan.get("tools") or [])
+    applied_tool_count = _reconcile_tools(client, plan.get("tools") or [], storage=storage)
     pending.append(
         _PendingLifecycleStep(
             name=STEP_TOOL_RECONCILE,
