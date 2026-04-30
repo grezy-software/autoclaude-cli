@@ -279,6 +279,69 @@ def test_wrap_for_user_raises_when_no_tooling(monkeypatch: pytest.MonkeyPatch) -
     assert "issue" in str(excinfo.value).lower()
 
 
+def test_summarize_runtime_unset_non_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "alice"})())
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
+    assert snap["effective_default_mode"] == "<unset>"
+    assert snap["user_settings_default_mode"] == "<unset>"
+    assert snap["project_settings_default_mode"] == "<unset>"
+    assert snap["claude_permission_mode"] == "bypassPermissions"
+    assert snap["claude_runs_as"] == "alice"
+
+
+def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
+    assert snap["user_settings_default_mode"] == "auto"
+    assert snap["project_settings_default_mode"] == "<unset>"
+    assert snap["effective_default_mode"] == "auto"
+    assert snap["claude_permission_mode"] == "<unset>"
+    # Root + auto mode -> claude runs as root, no autoclaude wrapper.
+    assert snap["claude_runs_as"] != "autoclaude"
+
+
+def test_summarize_runtime_root_with_bypass_runs_as_autoclaude(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
+    assert snap["claude_permission_mode"] == "bypassPermissions"
+    assert snap["claude_runs_as"] == "autoclaude"
+
+
+def test_summarize_runtime_project_overrides_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    _write_settings(cwd / ".claude" / "settings.json", {"permissions": {"defaultMode": "plan"}})
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "alice"})())
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
+    assert snap["user_settings_default_mode"] == "auto"
+    assert snap["project_settings_default_mode"] == "plan"
+    assert snap["effective_default_mode"] == "plan"
+    assert snap["claude_permission_mode"] == "bypassPermissions"
+
+
 def test_log_mode_once_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dedupe is asserted via the cache state since autoclaude's logger does not propagate to caplog."""
     emitted: list[str] = []

@@ -293,6 +293,53 @@ def log_mode_once(message: str) -> None:
     _log.info("%s", message)
 
 
+def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> dict[str, str]:
+    """Snapshot of the runtime decisions ``run_step`` will make for ``diag``.
+
+    Reports the resolved ``defaultMode`` from each settings file, whether
+    ``--permission-mode bypassPermissions`` will be passed to claude, and which
+    OS user will own the spawned ``claude`` subprocess.
+    """
+    home = home if home is not None else Path.home()
+    cwd = cwd if cwd is not None else Path.cwd()
+
+    user_settings = home / ".claude" / "settings.json"
+    project_settings = cwd / ".claude" / "settings.json"
+
+    def _mode_from(path: Path) -> str:
+        data = _read_settings_file(path)
+        perms = data.get("permissions")
+        if isinstance(perms, dict):
+            value = perms.get("defaultMode")
+            if isinstance(value, str):
+                return value
+        return "<unset>"
+
+    user_mode = _mode_from(user_settings)
+    project_mode = _mode_from(project_settings)
+    effective_mode = read_default_permission_mode(home=home, cwd=cwd) or "<unset>"
+    bypass = should_bypass_permissions(home=home, cwd=cwd)
+    permission_mode = "bypassPermissions" if bypass else "<unset>"
+
+    if bypass and is_root():
+        run_as = AUTOCLAUDE_USER
+    else:
+        try:
+            run_as = pwd.getpwuid(os.geteuid()).pw_name
+        except KeyError:
+            run_as = f"uid={os.geteuid()}"
+
+    return {
+        "user_settings_path": str(user_settings),
+        "user_settings_default_mode": user_mode,
+        "project_settings_path": str(project_settings),
+        "project_settings_default_mode": project_mode,
+        "effective_default_mode": effective_mode,
+        "claude_permission_mode": permission_mode,
+        "claude_runs_as": run_as,
+    }
+
+
 def reset_caches() -> None:
     """Clear per-process caches. Test-only; not part of the runtime contract."""
     _shared_repos.clear()

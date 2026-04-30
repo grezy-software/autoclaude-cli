@@ -113,6 +113,9 @@ class _TickState:
     # outcome so operators can click through to the changes.
     branch_url: str = ""
     pr_url: str = ""
+    # First non-null ``agent_config_id`` seen across the plan's steps; used to
+    # route tick-level notifications (Discord) to the right team webhook.
+    agent_config_id: int | None = None
 
 
 def _utcnow() -> datetime:
@@ -164,6 +167,38 @@ def _step_env(client: ApiClient, step: dict[str, Any], *, tick_id: int) -> dict[
         "AUTOCLAUDE_AGENT_CONFIG_ID": "" if agent_config_id is None else str(agent_config_id),
         "AUTOCLAUDE_TICK_ID": str(tick_id),
     }
+
+
+_DISCORD_ERROR_CHARS = 1500
+
+
+def _notify_tick_failure(client: ApiClient, state: _TickState) -> None:
+    """Post a tick-failure summary to the team's Discord webhook.
+
+    No-ops when the tick succeeded, was abandoned by the user, or when no
+    ``agent_config_id`` is available to route the message. Best-effort:
+    Discord posting must never bubble up and break the tick close path.
+    """
+    if state.status != STATUS_FAILED:
+        return
+    if state.agent_config_id is None:
+        _log.debug("skipping Discord failure notification: no agent_config_id on tick", extra={"source": "cli"})
+        return
+    error_excerpt = (state.error or "no error message").strip()[-_DISCORD_ERROR_CHARS:]
+    content_lines = [
+        f":x: AutoClaude tick #{state.tick_id} **FAILED**",
+        f"**Error:** ```{error_excerpt}```",
+        f"**Cost:** ${state.total_cost:.4f} | **Tokens:** {state.total_tokens}",
+    ]
+    if state.branch_url:
+        content_lines.append(f"**Branch:** {state.branch_url}")
+    if state.pr_url:
+        content_lines.append(f"**PR:** {state.pr_url}")
+    content = "\n".join(content_lines)
+    try:
+        client.post_discord_message(state.agent_config_id, content)
+    except ApiError as exc:
+        _log.warning("Discord failure notification failed: %s", exc, extra={"source": "cli"})
 
 
 def _send_heartbeat(
@@ -886,6 +921,10 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         _apply_resumption(steps, resumed_from)
 
     state = _TickState(tick_id=tick["id"])
+    state.agent_config_id = next(
+        (s.get("agent_config_id") for s in steps if s.get("agent_config_id") is not None),
+        None,
+    )
     started_at_iso = _iso_now()
     storage.append_history({"event": "tick_open", "tick_id": state.tick_id, "resumed_from": resumed_from})
     _log.info("[green]tick #%s open[/green]", state.tick_id, extra={"source": "cli"})
@@ -929,6 +968,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         except ApiError as close_exc:
             _log.error("tick close failed after workspace_prep error: %s", close_exc, extra={"source": "cli"})
         _persist_tick_outcome(storage, state, started_at=started_at_iso)
+        _notify_tick_failure(client, state)
         return EXIT_FAILED
 
     agent_start_ordinal = setup_count + 1
@@ -1119,6 +1159,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         state.total_tokens,
         extra={"source": "cli"},
     )
+    _notify_tick_failure(client, state)
     if state.status == STATUS_SUCCEEDED:
         return EXIT_OK
     if state.status == STATUS_TOKEN_EXHAUSTED:

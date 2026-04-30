@@ -12,7 +12,7 @@ from typing import Annotated
 
 import typer
 
-from autoclaude import __version__, repo_config
+from autoclaude import __version__, claude_env, repo_config
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.config import DEFAULT_URL, Config, Profile
 from autoclaude.daemon import DEFAULT_INTERVAL_SECONDS as DAEMON_DEFAULT_INTERVAL
@@ -245,6 +245,26 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
             "ok" if gh_is_authenticated() else "[red]NOT LOGGED IN[/red]",
             extra={"source": "cli"},
         )
+
+    runtime = claude_env.summarize_runtime()
+    auto_mode = runtime["effective_default_mode"] == "auto"
+    _log.info(
+        "claude defaultMode: %s (user=%s, project=%s)",
+        f"[green]{runtime['effective_default_mode']}[/green]" if auto_mode else runtime["effective_default_mode"],
+        runtime["user_settings_default_mode"],
+        runtime["project_settings_default_mode"],
+        extra={"source": "cli"},
+    )
+    _log.info(
+        "claude permission_mode: %s",
+        runtime["claude_permission_mode"],
+        extra={"source": "cli"},
+    )
+    _log.info(
+        "claude runs as: [bold]%s[/bold]",
+        runtime["claude_runs_as"],
+        extra={"source": "cli"},
+    )
 
     try:
         with ApiClient(prof, cli_version=__version__) as client:
