@@ -1,3 +1,10 @@
+## [2.5.10](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.9...v2.5.10) (2026-04-30)
+
+
+### Bug Fixes
+
+* **proc:** add security check when claude process ends ([0c8d448](https://github.com/grezy-software/autoclaude-cli/commit/0c8d4489eef9ba9a34761d41f2444d3d6e8d8ab4))
+
 ## [2.5.9](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.8...v2.5.9) (2026-04-30)
 
 
