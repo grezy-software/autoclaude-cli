@@ -126,7 +126,12 @@ def _init_logger() -> logging.Logger:
     logger = logging.getLogger(LOGGER_NAME)
     if _initialized:
         return logger
-    logger.setLevel(logging.INFO)
+    # Logger level is the gate every record must pass before reaching any
+    # handler. We use DEBUG here so the file handler (also DEBUG) can capture
+    # the upstream context of a tick failure -- notably the wrapped ``claude``
+    # argv logged at DEBUG just before Popen. The Rich console handler caps
+    # itself at INFO independently, so the terminal stays readable.
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
     logger.addHandler(_build_rich_handler())
     logger.addHandler(_build_file_handler())
