@@ -22,7 +22,7 @@ from autoclaude.daemon import run_daemon
 from autoclaude.gh import is_authenticated as gh_is_authenticated
 from autoclaude.gh import is_installed as gh_is_installed
 from autoclaude.log_uploader import replay_pending
-from autoclaude.logger import get_logger, profile_context
+from autoclaude.logger import get_logger, log_file_path, profile_context
 from autoclaude.runner import (
     EXIT_ABANDONED,
     EXIT_TOKEN_EXHAUSTED,
@@ -229,6 +229,7 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     _log.info("api_key set: %s", "yes" if prof.api_key else "[red]no[/red]", extra={"source": "cli"})
     _log.info("autoclaude_root: %s", prof.resolve_autoclaude_root(), extra={"source": "cli"})
     _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
+    _log.info("log_file: %s", log_file_path(), extra={"source": "cli"})
 
     for binary in ("claude", "gh", "git"):
         path = shutil.which(binary)
