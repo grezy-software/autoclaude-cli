@@ -1,3 +1,10 @@
+## [2.4.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.5...v2.4.6) (2026-04-30)
+
+
+### Bug Fixes
+
+* **files:** removed debug files ([08f97eb](https://github.com/grezy-software/autoclaude-cli/commit/08f97eb75de9d19a73816b248b832a4e3e868787))
+
 ## [2.4.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.4...v2.4.5) (2026-04-30)
 
 
