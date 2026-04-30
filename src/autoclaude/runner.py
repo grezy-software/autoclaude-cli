@@ -729,8 +729,24 @@ def _autocreate_github_repo(client: ApiClient, project: dict[str, Any]) -> str:
     """
     project_id = project.get("id")
     project_name = project.get("name") or _AUTOCREATE_FALLBACK_NAME
+    # DEBUG(autocreate-no-id): temporary diagnostic logging for "context project has no id" issue. Remove once root cause confirmed.
+    _log.info(
+        "autocreate: project_id=%r (type=%s) name=%r keys=%s full_dict=%r",
+        project_id,
+        type(project_id).__name__,
+        project_name,
+        sorted(project.keys()),
+        project,
+        extra={"source": "cli"},
+    )
     if not isinstance(project_id, int):
-        msg = "context project has no id; cannot auto-create github repo"
+        # DEBUG(autocreate-no-id): error enriched with project_id type + full dict.
+        # Trim back to short message once issue resolved.
+        msg = (
+            "context project has no id; cannot auto-create github repo. "
+            f"got project_id={project_id!r} (type={type(project_id).__name__}); "
+            f"full project dict={project!r}"
+        )
         raise GhError(msg)
 
     owner = gh_helpers.current_user_login()
@@ -799,16 +815,42 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
         )
         return EXIT_OK
 
+    # DEBUG(autocreate-no-id): temporary diagnostic logging for "context project has no id" issue. Remove once root cause confirmed.
+    _log.debug(
+        "context payload keys=%s project=%r team=%r plan_steps=%s",
+        sorted(ctx.keys()),
+        ctx.get("project"),
+        ctx.get("team"),
+        len((ctx.get("plan") or {}).get("steps") or []),
+        extra={"source": "cli"},
+    )
     project = ctx.get("project") or {}
     if not project:
         _log.info("[dim]scheduled tick skipped[/dim]: no project available", extra={"source": "cli"})
         return EXIT_OK
     github_repo = project.get("github_repo") or ""
     if not github_repo:
+        # DEBUG(autocreate-no-id): temporary diagnostic logging. Remove once root cause confirmed.
+        _log.warning(
+            "project has empty github_repo; entering autocreate. project_keys=%s id=%r name=%r default_branch=%r raw=%r",
+            sorted(project.keys()),
+            project.get("id"),
+            project.get("name"),
+            project.get("default_branch"),
+            project,
+            extra={"source": "cli"},
+        )
         try:
             github_repo = _autocreate_github_repo(client, project)
         except (GhError, ApiError) as exc:
-            _log.error("[red]github repo auto-create failed[/red]: %s", exc, extra={"source": "cli"})
+            # DEBUG(autocreate-no-id): extra context (project dict, ctx keys) added for diagnostics. Trim back to just `exc` once issue resolved.
+            _log.error(
+                "[red]github repo auto-create failed[/red]: %s | project=%r ctx_keys=%s",
+                exc,
+                project,
+                sorted(ctx.keys()),
+                extra={"source": "cli"},
+            )
             return EXIT_FAILED
 
     factory = workspace_factory or Workspace.for_github_repo
