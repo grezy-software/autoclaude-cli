@@ -325,6 +325,7 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
     if bypass and claude_env.is_root():
         claude_env.ensure_autoclaude_user()
         claude_env.share_claude_config()
+        claude_env.share_claude_binary()
         claude_env.share_repo(cwd)
         argv = claude_env.wrap_for_user(argv)
         claude_env.log_mode_once(f"[claude_env] sandbox_user={claude_env.AUTOCLAUDE_USER} (host UID=0)")

@@ -375,6 +375,113 @@ def test_summarize_runtime_project_overrides_user(tmp_path: Path, monkeypatch: p
     assert snap["claude_runs_as"] == "alice"
 
 
+def test_grant_path_traversal_walks_ancestors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    leaf = tmp_path / "a" / "b" / "c" / "claude"
+    leaf.parent.mkdir(parents=True)
+    leaf.write_text("#!/bin/sh\n", encoding="utf-8")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    # Force every ancestor to look "not world-executable" so we cover the full walk.
+    monkeypatch.setattr(claude_env, "_has_other_execute", lambda _p: False)
+
+    claude_env._grant_path_traversal(leaf)  # noqa: SLF001
+
+    chgrp_targets = [c[-1] for c in invoked if c[0] == "chgrp"]
+    chmod_targets = [c[-1] for c in invoked if c[0] == "chmod"]
+    # Each ancestor between tmp_path's drive root and the leaf gets chgrp + chmod.
+    expected_ancestors = [str(tmp_path / "a" / "b" / "c"), str(tmp_path / "a" / "b"), str(tmp_path / "a"), str(tmp_path)]
+    for ancestor in expected_ancestors:
+        assert ancestor in chgrp_targets
+        assert ancestor in chmod_targets
+    # Leaf itself was chgrp'd + chmod'd as well.
+    assert str(leaf.absolute()) in chgrp_targets
+
+
+def test_grant_path_traversal_skips_world_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    leaf = tmp_path / "claude"
+    leaf.write_text("#!/bin/sh\n", encoding="utf-8")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    monkeypatch.setattr(claude_env, "_has_other_execute", lambda _p: True)
+
+    claude_env._grant_path_traversal(leaf)  # noqa: SLF001
+
+    # Every ancestor and the leaf itself are already world-executable -> no chgrp/chmod issued.
+    assert invoked == []
+
+
+def test_grant_path_traversal_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    leaf = tmp_path / "deep" / "claude"
+    leaf.parent.mkdir()
+    leaf.write_text("x", encoding="utf-8")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    monkeypatch.setattr(claude_env, "_has_other_execute", lambda _p: False)
+
+    claude_env._grant_path_traversal(leaf)  # noqa: SLF001
+    first_calls = len(invoked)
+    claude_env._grant_path_traversal(leaf)  # noqa: SLF001
+    assert len(invoked) == first_calls
+
+
+def test_share_claude_binary_walks_symlink_and_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bin_dir = tmp_path / "root" / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    target = tmp_path / "root" / ".local" / "share" / "claude" / "versions" / "2.1.123"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    symlink = bin_dir / "claude"
+    symlink.symlink_to(target)
+
+    monkeypatch.setattr(claude_env.shutil, "which", lambda _name: str(symlink))
+    granted: list[str] = []
+
+    def _fake_grant(path: Path, **_kw: object) -> None:
+        granted.append(str(path))
+
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", _fake_grant)
+    claude_env.share_claude_binary()
+
+    # Both the symlink path and its resolved target must be walked.
+    assert str(symlink) in granted
+    assert str(target) in granted
+
+
+def test_share_claude_binary_skips_when_no_binary_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.shutil, "which", lambda _name: None)
+    called: list[str] = []
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda *_a, **_kw: called.append("called"))
+    claude_env.share_claude_binary()
+    assert called == []
+
+
+def test_share_claude_binary_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    binary = tmp_path / "claude"
+    binary.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(claude_env.shutil, "which", lambda _name: str(binary))
+    invocations: list[str] = []
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda path, **_kw: invocations.append(str(path)))
+
+    claude_env.share_claude_binary()
+    first = len(invocations)
+    claude_env.share_claude_binary()
+    assert len(invocations) == first
+
+
+def test_share_claude_config_grants_ancestor_traversal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", lambda _u: _FakePwEntry(tmp_path / "home" / "autoclaude"))
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda *_a, **_kw: True)
+    granted: list[str] = []
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda path, **_kw: granted.append(str(path)))
+
+    share_claude_config(home=home)
+
+    assert str(home / ".claude") in granted
+
+
 def test_log_mode_once_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Dedupe is asserted via the cache state since autoclaude's logger does not propagate to caplog."""
     emitted: list[str] = []
