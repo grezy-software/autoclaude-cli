@@ -110,6 +110,17 @@ def is_root() -> bool:
     return os.geteuid() == 0
 
 
+def autoclaude_user_exists() -> bool:
+    """Public probe for whether the dedicated ``autoclaude`` system user exists.
+
+    The runner uses this at tick time to decide whether to bail out with a
+    "run ``autoclaude init --user-autoclaude``" message rather than provisioning
+    the user mid-tick (which would surprise the operator and slow the first
+    step).
+    """
+    return _user_exists(AUTOCLAUDE_USER)
+
+
 def _user_exists(username: str) -> bool:
     try:
         pwd.getpwnam(username)

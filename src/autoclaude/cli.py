@@ -434,6 +434,17 @@ def init(
         Path | None,
         typer.Option("--repo", help="Repo to scaffold. Defaults to the current directory."),
     ] = None,
+    user_autoclaude: Annotated[  # noqa: FBT002 (Typer flag)
+        bool,
+        typer.Option(
+            "--user-autoclaude",
+            help=(
+                "Provision the dedicated `autoclaude` system user (and adjust the necessary "
+                "permissions) without prompting and without scaffolding a repo. Use this when "
+                "a tick failed with `autoclaude user is not provisioned`."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Scaffold ``.autoclaude/`` in the target repo (idempotent).
 
@@ -441,13 +452,109 @@ def init(
     ``META.json`` with the current schema version, and drops a default
     ``config.toml`` if none exists. Safe to re-run -- existing config files
     are never overwritten.
+
+    Also provisions the dedicated ``autoclaude`` system user up-front when this
+    host will need it (root + ``--permission-mode bypassPermissions``), so the
+    first tick does not pay the cost or surprise the operator. The user is only
+    created after explicit confirmation.
+
+    Pass ``--user-autoclaude`` to skip the repo scaffolding and run *only* the
+    user provisioning + permission grants, without the interactive prompt. This
+    is the recovery path the runner points to when a tick fails because the
+    user is missing.
     """
+    if user_autoclaude:
+        _provision_autoclaude_runtime(cwd=Path.cwd(), force=True, interactive=False)
+        return
+
     root = (repo or Path.cwd()).resolve()
     storage = RepoStorage.from_repo(root)
     storage.ensure()
     config_path = repo_config.scaffold_default(root)
     _log.info("initialised [bold]%s[/bold]", storage.root, extra={"source": "cli"})
     _log.info("config: %s", config_path, extra={"source": "cli"})
+    _provision_autoclaude_runtime(cwd=root, force=False, interactive=True)
+
+
+def _provision_autoclaude_runtime(*, cwd: Path, force: bool, interactive: bool) -> None:
+    """Provision the ``autoclaude`` system user and apply the install-time permission grants.
+
+    Single source of truth shared by ``autoclaude init`` (interactive prompt)
+    and ``autoclaude init --user-autoclaude`` (forced, non-interactive recovery
+    path). After this returns successfully, every subsequent tick can wrap
+    ``claude`` with ``runuser -u autoclaude`` without doing any further
+    chgrp/useradd work mid-step.
+
+    Args:
+        cwd: where to look for a project-level ``.claude/settings.json`` to
+            decide if ``defaultMode=auto`` is in effect.
+        force: when ``True``, run the provisioning even if ``defaultMode=auto``
+            would normally make it unnecessary. ``--user-autoclaude`` sets this
+            -- the operator opted in explicitly.
+        interactive: when ``True``, prompt before creating the user. The flag
+            form skips the prompt.
+    """
+    if not claude_env.is_root():
+        if force:
+            _log.error(
+                "[red]--user-autoclaude requires root[/red] to create system users",
+                extra={"source": "cli"},
+            )
+        return
+    if not force and not claude_env.should_bypass_permissions(cwd=cwd):
+        # Auto mode: claude accepts root, no privilege drop needed.
+        return
+
+    if claude_env.autoclaude_user_exists():
+        _log.info(
+            "[dim]system user '%s' already provisioned[/dim]",
+            claude_env.AUTOCLAUDE_USER,
+            extra={"source": "cli"},
+        )
+    else:
+        if interactive:
+            _log.info(
+                "[yellow]This host runs autoclaude as root and uses --permission-mode bypassPermissions, "
+                "which `claude` refuses to combine with UID 0.[/yellow]",
+                extra={"source": "cli"},
+            )
+            _log.info(
+                "[yellow]autoclaude can create a dedicated system user '%s' (and group of the same "
+                "name, with root added to it) so claude can run unprivileged.[/yellow]",
+                claude_env.AUTOCLAUDE_USER,
+                extra={"source": "cli"},
+            )
+            if not typer.confirm(f"Create system user '{claude_env.AUTOCLAUDE_USER}' now?", default=True):
+                _log.warning(
+                    "skipped: the first tick will fail with `autoclaude user is not provisioned` "
+                    "until you run `autoclaude init --user-autoclaude`.",
+                    extra={"source": "cli"},
+                )
+                return
+        try:
+            claude_env.ensure_autoclaude_user()
+        except claude_env.UserCreationError as exc:
+            _log.error("[red]user provisioning failed[/red]: %s", exc, extra={"source": "cli"})
+            return
+        _log.info(
+            "[green]system user '%s' provisioned[/green]",
+            claude_env.AUTOCLAUDE_USER,
+            extra={"source": "cli"},
+        )
+
+    # Apply install-time permission grants. Both helpers are idempotent and
+    # cached per process, so this is safe to re-run on every `init`.
+    try:
+        claude_env.share_claude_config()
+        claude_env.share_claude_binary()
+    except claude_env.UserCreationError as exc:
+        _log.error("[red]permission setup failed[/red]: %s", exc, extra={"source": "cli"})
+        return
+    _log.info(
+        "[green]claude config and binary path permissions granted to the '%s' group[/green]",
+        claude_env.AUTOCLAUDE_GROUP,
+        extra={"source": "cli"},
+    )
 
 
 @app.command()
