@@ -34,6 +34,46 @@ def test_file_handler_captures_debug() -> None:
     )
 
 
+def test_file_formatter_renders_local_time_not_utc() -> None:
+    """The file handler must format timestamps in the system local zone.
+
+    Operators read ``autoclaude.log`` to correlate with their wall clock; UTC
+    would force them to do mental zone math on every line and would break
+    grep/awk against ``date`` output.
+    """
+    import logging  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from logging.handlers import RotatingFileHandler  # noqa: PLC0415
+
+    log = autoclaude_logger.get_logger()
+    file_handlers = [h for h in log.handlers if isinstance(h, RotatingFileHandler)]
+    assert file_handlers, "expected a RotatingFileHandler on the autoclaude logger"
+    fmt = file_handlers[0].formatter
+    assert fmt is not None
+
+    record = logging.LogRecord(
+        name="autoclaude.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="hi",
+        args=None,
+        exc_info=None,
+    )
+    record.created = time.time()
+    record.profile = "-"
+    rendered = fmt.format(record)
+
+    # The local zone offset (e.g. ``+0200`` for CEST). If the formatter were
+    # using gmtime, the offset would always be ``+0000``.
+    expected_offset = time.strftime("%z", time.localtime(record.created))
+    assert expected_offset in rendered, (
+        f"file handler emitted {rendered!r} which does not contain the local "
+        f"timezone offset {expected_offset!r}; the formatter is likely using "
+        f"gmtime (UTC) instead of localtime."
+    )
+
+
 def test_console_handler_stays_at_info_or_above() -> None:
     """The Rich console handler should stay at INFO so DEBUG noise is hidden from the terminal."""
     from rich.logging import RichHandler  # noqa: PLC0415 (local import; tests-only dependency surface)

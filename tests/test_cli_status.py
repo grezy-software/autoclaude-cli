@@ -133,6 +133,19 @@ def test_resolve_next_tick_pending_when_no_history(tmp_path: Path) -> None:
     assert "pending" in label
 
 
+def test_resolve_next_tick_handles_naive_ended_at(tmp_path: Path) -> None:
+    """A naive ``ended_at`` (no Z, no offset) must be assumed UTC, not crash on subtraction."""
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    naive_iso = (datetime.now(tz=UTC) - timedelta(seconds=60)).replace(tzinfo=None).isoformat()
+    (state_dir / "last_tick.json").write_text(json.dumps({"ended_at": naive_iso}), encoding="utf-8")
+    prof = Profile(name="default", autoclaude_root=str(tmp_path), paused=False)
+    # Should not raise TypeError on aware/naive subtraction.
+    color, label = cli._resolve_next_tick(prof, "running")  # noqa: SLF001
+    assert color in {"green", "yellow"}
+    assert "unknown" not in label
+
+
 def test_resolve_next_tick_paused_profile(tmp_path: Path) -> None:
     ended_at = datetime.now(tz=UTC)
     _write_last_tick(tmp_path, ended_at)

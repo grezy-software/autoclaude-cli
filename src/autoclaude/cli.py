@@ -203,8 +203,7 @@ def login(
                 extra={"source": "cli"},
             )
         _log.info(
-            "heartbeat running, scheduler ticking every %d minutes across all profiles. "
-            "Use `autoclaude pause` to stop scheduled ticks.",
+            "heartbeat running, scheduler ticking every %d minutes across all profiles. Use `autoclaude pause` to stop scheduled ticks.",
             int(SCHEDULER_DEFAULT_INTERVAL // 60),
             extra={"source": "cli"},
         )
@@ -379,10 +378,18 @@ def _resolve_next_tick(prof: Profile, level: str) -> tuple[str, str]:
         ended_at = datetime.fromisoformat(parseable)
     except ValueError:
         return "dim", f"unknown (unparseable ended_at={ended_at_raw!r})"
+    # The server is the canonical source for these stamps and writes UTC, but
+    # if a naive datetime ever sneaks through, treat it as UTC rather than
+    # crashing on the aware/naive subtraction below.
+    if ended_at.tzinfo is None:
+        ended_at = ended_at.replace(tzinfo=UTC)
 
     next_at_utc = ended_at + timedelta(seconds=SCHEDULER_DEFAULT_INTERVAL)
     now_utc = datetime.now(tz=UTC)
     delta = (next_at_utc - now_utc).total_seconds()
+    # Display in the operator's local zone (the system tz). `.astimezone()`
+    # without args converts an aware datetime to the local zone -- never UTC
+    # unless the host has no tz configured.
     next_at_local = next_at_utc.astimezone().strftime("%H:%M:%S")
     if delta <= 0:
         return "yellow", f"due now (was scheduled at {next_at_local})"
@@ -642,8 +649,7 @@ def _provision_autoclaude_runtime(*, cwd: Path, force: bool, interactive: bool) 
             )
             if not typer.confirm(f"Create system user '{claude_env.AUTOCLAUDE_USER}' now?", default=True):
                 _log.warning(
-                    "skipped: the first tick will fail with `autoclaude user is not provisioned` "
-                    "until you run `autoclaude init --user-autoclaude`.",
+                    "skipped: the first tick will fail with `autoclaude user is not provisioned` until you run `autoclaude init --user-autoclaude`.",
                     extra={"source": "cli"},
                 )
                 return
@@ -852,11 +858,7 @@ def logs(
         raise typer.Exit(code=1)
     suffix = "out.log" if stream_value == "stdout" else "err.log"
     log_dir = Path.home() / ".config" / "autoclaude" / "logs"
-    targets = (
-        [log_dir / f"scheduler.{suffix}", log_dir / f"heartbeat.{suffix}"]
-        if kind_value == "all"
-        else [log_dir / f"{kind_value}.{suffix}"]
-    )
+    targets = [log_dir / f"scheduler.{suffix}", log_dir / f"heartbeat.{suffix}"] if kind_value == "all" else [log_dir / f"{kind_value}.{suffix}"]
     missing = [str(p) for p in targets if not p.exists()]
     if missing:
         _log.warning(
