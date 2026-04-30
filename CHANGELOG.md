@@ -1,3 +1,10 @@
+## [2.4.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.2...v2.4.3) (2026-04-30)
+
+
+### Bug Fixes
+
+* **diag:** improve diag logs for permission ([4e5da37](https://github.com/grezy-software/autoclaude-cli/commit/4e5da3785e1bc97399cd07af43ac78cd3e575f1f))
+
 ## [2.4.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.1...v2.4.2) (2026-04-30)
 
 
