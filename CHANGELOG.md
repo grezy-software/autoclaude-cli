@@ -1,3 +1,11 @@
+## [2.5.9](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.8...v2.5.9) (2026-04-30)
+
+
+### Bug Fixes
+
+* **diag:** add logfile localisation to commande `autoclaude diag` ([556907d](https://github.com/grezy-software/autoclaude-cli/commit/556907ddc4d762afe440d74a0e29566afec3081a))
+* **profiles:** remove active profile mecanisme ([e370519](https://github.com/grezy-software/autoclaude-cli/commit/e370519d8f11e8b1a4942b2b6b5dfc4dd1c86b91))
+
 ## [2.5.8](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.7...v2.5.8) (2026-04-30)
 
 
