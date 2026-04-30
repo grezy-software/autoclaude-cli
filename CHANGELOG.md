@@ -1,3 +1,10 @@
+## [2.4.7](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.6...v2.4.7) (2026-04-30)
+
+
+### Bug Fixes
+
+* **runner:** skip tick when context returns no project ([363df6e](https://github.com/grezy-software/autoclaude-cli/commit/363df6e3ca0fb8f1e641432a9de3e175c9b32bb5))
+
 ## [2.4.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.5...v2.4.6) (2026-04-30)
 
 
