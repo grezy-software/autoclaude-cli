@@ -234,7 +234,22 @@ class ApiClient:
     # --- AutoClaude endpoints -------------------------------------------------
 
     def context(self: Self) -> dict[str, Any]:
-        return self._attempt("GET", "/api/ac/runner/context/", docs_path="/api/ac/runner/context/")
+        result = self._attempt("GET", "/api/ac/runner/context/", docs_path="/api/ac/runner/context/")
+        # DEBUG(autocreate-no-id): temporary diagnostic logging for "context project has no id" issue. Remove this whole block once root cause confirmed.
+        try:
+            import logging
+
+            _ctx_log = logging.getLogger("autoclaude.api_client")
+            _ctx_log.debug(
+                "context() response: keys=%s project=%r team=%r",
+                sorted(result.keys()) if isinstance(result, dict) else type(result).__name__,
+                (result.get("project") if isinstance(result, dict) else None),
+                (result.get("team") if isinstance(result, dict) else None),
+                extra={"source": "cli"},
+            )
+        except Exception:  # noqa: BLE001 - logging must never break the call
+            pass
+        return result
 
     def open_tick(self: Self, *, runner_version: str, project_id: int | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {"runner_version": runner_version}
