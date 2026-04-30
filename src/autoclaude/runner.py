@@ -740,8 +740,13 @@ def _autocreate_github_repo(client: ApiClient, project: dict[str, Any]) -> str:
         extra={"source": "cli"},
     )
     if not isinstance(project_id, int):
-        # DEBUG(autocreate-no-id): error message enriched with project_id type + full dict for diagnostics. Trim back to short message once issue resolved.
-        msg = f"context project has no id; cannot auto-create github repo. got project_id={project_id!r} (type={type(project_id).__name__}); full project dict={project!r}"
+        # DEBUG(autocreate-no-id): error enriched with project_id type + full dict.
+        # Trim back to short message once issue resolved.
+        msg = (
+            "context project has no id; cannot auto-create github repo. "
+            f"got project_id={project_id!r} (type={type(project_id).__name__}); "
+            f"full project dict={project!r}"
+        )
         raise GhError(msg)
 
     owner = gh_helpers.current_user_login()

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -235,11 +236,10 @@ class ApiClient:
 
     def context(self: Self) -> dict[str, Any]:
         result = self._attempt("GET", "/api/ac/runner/context/", docs_path="/api/ac/runner/context/")
-        # DEBUG(autocreate-no-id): temporary diagnostic logging for "context project has no id" issue. Remove this whole block once root cause confirmed.
-        try:
-            import logging
-
-            _ctx_log = logging.getLogger("autoclaude.api_client")
+        # DEBUG(autocreate-no-id): temporary diagnostic logging.
+        # Remove this whole block once root cause confirmed.
+        _ctx_log = logging.getLogger("autoclaude.api_client")
+        with contextlib.suppress(Exception):
             _ctx_log.debug(
                 "context() response: keys=%s project=%r team=%r",
                 sorted(result.keys()) if isinstance(result, dict) else type(result).__name__,
@@ -247,8 +247,6 @@ class ApiClient:
                 (result.get("team") if isinstance(result, dict) else None),
                 extra={"source": "cli"},
             )
-        except Exception:  # noqa: BLE001 - logging must never break the call
-            pass
         return result
 
     def open_tick(self: Self, *, runner_version: str, project_id: int | None = None) -> dict[str, Any]:
