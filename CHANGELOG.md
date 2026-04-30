@@ -1,3 +1,10 @@
+## [2.5.8](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.7...v2.5.8) (2026-04-30)
+
+
+### Bug Fixes
+
+* **runner:** satisfy ruff for diagnostic logs ([736bc6d](https://github.com/grezy-software/autoclaude-cli/commit/736bc6d073d613e776d0903e17901e8e30616d6c))
+
 ## [2.5.7](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.6...v2.5.7) (2026-04-30)
 
 
