@@ -1,3 +1,10 @@
+## [2.4.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.1...v2.4.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* **autoclaude:** add more logs to debug permissions configuration ([10c9218](https://github.com/grezy-software/autoclaude-cli/commit/10c92189c7192e3c8671bc3171592f52042eddc5))
+
 ## [2.4.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.0...v2.4.1) (2026-04-30)
 
 
