@@ -44,7 +44,6 @@ uv tool install --force .      # or: pipx install --force ./
 #      - heartbeat  (always-on liveness ping; never paused)
 #      - scheduler  (runs `autoclaude tick` every 15 minutes)
 autoclaude login
-autoclaude login --url localhost:3001        # point at a local frontend
 
 # 2. Verify everything is wired up.
 autoclaude diag
