@@ -111,7 +111,7 @@ def _build_file_handler() -> RotatingFileHandler:
         backupCount=LOG_FILE_BACKUP_COUNT,
         encoding="utf-8",
     )
-    handler.setLevel(logging.INFO)
+    handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(profile)s] %(levelname)s [%(name)s] %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S%z",
