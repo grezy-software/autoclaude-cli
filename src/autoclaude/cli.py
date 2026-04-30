@@ -260,11 +260,18 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
         runtime["claude_permission_mode"],
         extra={"source": "cli"},
     )
-    _log.info(
-        "claude runs as: [bold]%s[/bold]",
-        runtime["claude_runs_as"],
-        extra={"source": "cli"},
-    )
+    if runtime["autoclaude_user_required"] and not runtime["autoclaude_user_exists"]:
+        _log.warning(
+            "claude runs as: [bold]%s[/bold] [yellow](autoclaude user not yet provisioned; will be created on next tick)[/yellow]",
+            runtime["claude_runs_as"],
+            extra={"source": "cli"},
+        )
+    else:
+        _log.info(
+            "claude runs as: [bold]%s[/bold]",
+            runtime["claude_runs_as"],
+            extra={"source": "cli"},
+        )
 
     try:
         with ApiClient(prof, cli_version=__version__) as client:

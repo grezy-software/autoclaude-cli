@@ -286,6 +286,7 @@ def test_summarize_runtime_unset_non_root(tmp_path: Path, monkeypatch: pytest.Mo
     cwd.mkdir()
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "alice"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: False)
 
     snap = claude_env.summarize_runtime(home=home, cwd=cwd)
     assert snap["effective_default_mode"] == "<unset>"
@@ -293,6 +294,8 @@ def test_summarize_runtime_unset_non_root(tmp_path: Path, monkeypatch: pytest.Mo
     assert snap["project_settings_default_mode"] == "<unset>"
     assert snap["claude_permission_mode"] == "bypassPermissions"
     assert snap["claude_runs_as"] == "alice"
+    assert snap["autoclaude_user_required"] is False
+    assert snap["autoclaude_user_exists"] is False
 
 
 def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,6 +304,8 @@ def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: 
     cwd.mkdir(parents=True)
     _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "root"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: True)
 
     snap = claude_env.summarize_runtime(home=home, cwd=cwd)
     assert snap["user_settings_default_mode"] == "auto"
@@ -308,10 +313,11 @@ def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: 
     assert snap["effective_default_mode"] == "auto"
     assert snap["claude_permission_mode"] == "<unset>"
     # Root + auto mode -> claude runs as root, no autoclaude wrapper.
-    assert snap["claude_runs_as"] != "autoclaude"
+    assert snap["claude_runs_as"] == "root"
+    assert snap["autoclaude_user_required"] is False
 
 
-def test_summarize_runtime_root_with_bypass_runs_as_autoclaude(
+def test_summarize_runtime_root_bypass_with_user_provisioned(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -320,10 +326,34 @@ def test_summarize_runtime_root_with_bypass_runs_as_autoclaude(
     cwd = tmp_path / "repo"
     cwd.mkdir()
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "root"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda u: u == claude_env.AUTOCLAUDE_USER)
 
     snap = claude_env.summarize_runtime(home=home, cwd=cwd)
     assert snap["claude_permission_mode"] == "bypassPermissions"
     assert snap["claude_runs_as"] == "autoclaude"
+    assert snap["autoclaude_user_required"] is True
+    assert snap["autoclaude_user_exists"] is True
+
+
+def test_summarize_runtime_root_bypass_with_user_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the autoclaude user is required but not yet on the system, report the actual current user."""
+    home = tmp_path / "home"
+    home.mkdir()
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "root"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: False)
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
+    assert snap["claude_permission_mode"] == "bypassPermissions"
+    assert snap["claude_runs_as"] == "root"  # not "autoclaude" — it doesn't exist yet
+    assert snap["autoclaude_user_required"] is True
+    assert snap["autoclaude_user_exists"] is False
 
 
 def test_summarize_runtime_project_overrides_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -334,12 +364,15 @@ def test_summarize_runtime_project_overrides_user(tmp_path: Path, monkeypatch: p
     _write_settings(cwd / ".claude" / "settings.json", {"permissions": {"defaultMode": "plan"}})
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "alice"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: False)
 
     snap = claude_env.summarize_runtime(home=home, cwd=cwd)
     assert snap["user_settings_default_mode"] == "auto"
     assert snap["project_settings_default_mode"] == "plan"
     assert snap["effective_default_mode"] == "plan"
     assert snap["claude_permission_mode"] == "bypassPermissions"
+    assert snap["autoclaude_user_required"] is False  # not root
+    assert snap["claude_runs_as"] == "alice"
 
 
 def test_log_mode_once_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:

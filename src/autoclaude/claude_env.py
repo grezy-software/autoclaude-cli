@@ -293,12 +293,20 @@ def log_mode_once(message: str) -> None:
     _log.info("%s", message)
 
 
-def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> dict[str, str]:
+def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> dict[str, object]:
     """Snapshot of the runtime decisions ``run_step`` will make for ``diag``.
 
     Reports the resolved ``defaultMode`` from each settings file, whether
     ``--permission-mode bypassPermissions`` will be passed to claude, and which
     OS user will own the spawned ``claude`` subprocess.
+
+    ``claude_runs_as`` reflects the actual current state of the system, not
+    intent: ``autoclaude`` is only returned when (a) the runner would wrap with
+    that user AND (b) the user actually exists on the host. When the wrapper is
+    intended but the user has not been provisioned yet, ``claude_runs_as``
+    reports the current effective uid's name and ``autoclaude_user_required`` /
+    ``autoclaude_user_exists`` together signal that the next tick will provision
+    it (or fail loudly if useradd is missing).
     """
     home = home if home is not None else Path.home()
     cwd = cwd if cwd is not None else Path.cwd()
@@ -321,13 +329,15 @@ def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> d
     bypass = should_bypass_permissions(home=home, cwd=cwd)
     permission_mode = "bypassPermissions" if bypass else "<unset>"
 
-    if bypass and is_root():
-        run_as = AUTOCLAUDE_USER
-    else:
-        try:
-            run_as = pwd.getpwuid(os.geteuid()).pw_name
-        except KeyError:
-            run_as = f"uid={os.geteuid()}"
+    autoclaude_required = bypass and is_root()
+    autoclaude_exists = _user_exists(AUTOCLAUDE_USER)
+
+    try:
+        current_user = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        current_user = f"uid={os.geteuid()}"
+
+    run_as = AUTOCLAUDE_USER if autoclaude_required and autoclaude_exists else current_user
 
     return {
         "user_settings_path": str(user_settings),
@@ -337,6 +347,8 @@ def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> d
         "effective_default_mode": effective_mode,
         "claude_permission_mode": permission_mode,
         "claude_runs_as": run_as,
+        "autoclaude_user_required": autoclaude_required,
+        "autoclaude_user_exists": autoclaude_exists,
     }
 
 
