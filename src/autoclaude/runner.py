@@ -800,6 +800,9 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
         return EXIT_OK
 
     project = ctx.get("project") or {}
+    if not project:
+        _log.info("[dim]scheduled tick skipped[/dim]: no project available", extra={"source": "cli"})
+        return EXIT_OK
     github_repo = project.get("github_repo") or ""
     if not github_repo:
         try:
