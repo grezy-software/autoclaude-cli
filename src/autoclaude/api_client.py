@@ -359,41 +359,8 @@ class ApiClient:
             json={"entries": entries},
         )
 
-    def debug_file_request_pending(self: Self) -> list[dict[str, Any]]:
-        """List pending DebugFileRequests targeting ticks this runner owns."""
-        result = self._attempt(
-            "GET",
-            "/api/ac/runner/debug_file_request_pending/",
-            docs_path="/api/ac/runner/debug_file_request_pending/",
-        )
-        return list(result) if isinstance(result, list) else []
-
-    def debug_file_request_fulfill(
-        self: Self,
-        request_id: int,
-        *,
-        content: str = "",
-        content_truncated: bool = False,
-        reason: str = "",
-    ) -> dict[str, Any]:
-        """Upload file contents (or a denial reason) for a specific DebugFileRequest."""
-        return self._attempt(
-            "PATCH",
-            f"/api/ac/runner/{request_id}/debug_file_request_fulfill/",
-            docs_path="/api/ac/runner/debug_file_request_fulfill/",
-            json={
-                "content": content,
-                "content_truncated": content_truncated,
-                "reason": reason,
-            },
-        )
-
     def upload_tick_file_tree(self: Self, tick_id: int, snapshot: dict[str, Any]) -> dict[str, Any]:
-        """Upload a capped ``.autoclaude/`` layout snapshot at tick close.
-
-        The dashboard renders the tree in the DebugFileRequest UI so operators
-        can browse what files are available instead of guessing paths.
-        """
+        """Upload a capped ``.autoclaude/`` layout snapshot at tick close."""
         return self._attempt(
             "PATCH",
             f"/api/ac/runner/{tick_id}/tick_file_tree/",

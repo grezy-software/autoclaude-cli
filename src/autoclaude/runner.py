@@ -24,14 +24,12 @@ from autoclaude import gh as gh_helpers
 from autoclaude import repo_config as repo_config_mod
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.claude_proc import ClaudeResult, run_step
-from autoclaude.debug_files import fulfill_pending as fulfill_debug_requests
 from autoclaude.file_tree import build_snapshot as build_file_tree_snapshot
 from autoclaude.gh import GhError
 from autoclaude.gh import ensure_installed as ensure_gh_installed
 from autoclaude.heartbeat import HeartbeatPinger
 from autoclaude.logger import get_logger
 from autoclaude.storage import RepoStorage
-from autoclaude.tick_archive import archive_tick_logs, purge_expired
 from autoclaude.tick_logger import TickLogger
 from autoclaude.tools.applier import apply_manifest
 from autoclaude.tools.manifest import Manifest, ManifestRef
@@ -207,15 +205,12 @@ def _send_heartbeat(
     *,
     tokens: int | None = None,
     cost: float | None = None,
-    storage: RepoStorage | None = None,
 ) -> None:
-    """Best-effort heartbeat ping + debug-file poll."""
+    """Best-effort heartbeat ping."""
     try:
         client.tick_heartbeat(tick_id, token_cost_estimate=tokens, cost_usd=cost)
     except ApiError as exc:
         _log.warning("heartbeat failed: %s", exc, extra={"source": "cli"})
-    if storage is not None:
-        fulfill_debug_requests(client, storage)
 
 
 def _flush_pending_setup_steps(
@@ -383,7 +378,7 @@ def _execute_steps(  # noqa: PLR0911
             state.error = "client received shutdown signal"
             _log.warning("shutdown requested; abandoning tick", extra={"source": "cli"})
             return ordinal
-        _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost, storage=storage)
+        _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost)
         agent = step["agent_slug"]
         prompt = step.get("prompt") or ""
         display_name = step.get("display_name") or agent
@@ -758,16 +753,8 @@ def _autocreate_github_repo(client: ApiClient, project: dict[str, Any]) -> str:
     return full_repo
 
 
-def _cleanup_worktree(workspace: Workspace, worktree: Worktree, *, tick_id: int | None = None) -> None:
-    """Archive the tick's `.autoclaude/` logs, then remove the worktree.
-
-    The archive is what backs the dashboard's debug-file requests after the
-    worktree is gone. Pruning expired archives here keeps the runner's
-    on-disk footprint bounded without a separate cron.
-    """
-    if tick_id is not None:
-        archive_tick_logs(tick_id, worktree.path / ".autoclaude")
-        purge_expired()
+def _cleanup_worktree(workspace: Workspace, worktree: Worktree) -> None:
+    """Remove the worktree."""
     try:
         workspace.remove_worktree(worktree)
     except WorkspaceError as exc:
@@ -874,7 +861,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         return EXIT_OK
 
     tool_reconcile_started = _utcnow()
-    applied_tool_count = _reconcile_tools(client, plan.get("tools") or [], storage=storage)
+    applied_tool_count = _reconcile_tools(client, plan.get("tools") or [])
     pending.append(
         _PendingLifecycleStep(
             name=STEP_TOOL_RECONCILE,
@@ -991,7 +978,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
                 get_totals=lambda: (state.total_tokens, state.total_cost),
             ),
         ):
-            _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost, storage=storage)
+            _send_heartbeat(client, state.tick_id, tokens=state.total_tokens, cost=state.total_cost)
             last_agent_ordinal = _execute_steps(
                 client,
                 state,
@@ -1118,7 +1105,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
 
             def _do_workspace_cleanup() -> str:
                 nonlocal worktree_cleaned
-                _cleanup_worktree(workspace, worktree, tick_id=state.tick_id)
+                _cleanup_worktree(workspace, worktree)
                 worktree_cleaned = True
                 return f"worktree at {worktree.path} removed"
 
@@ -1149,7 +1136,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
         if not worktree_cleaned and worktree is not None:
-            _cleanup_worktree(workspace, worktree, tick_id=state.tick_id)
+            _cleanup_worktree(workspace, worktree)
 
     _log.info(
         "[green]tick #%s closed[/green] status=%s cost=$%.4f tokens=%s",

@@ -1,9 +1,8 @@
 """Build a capped snapshot of the `.autoclaude/` folder layout.
 
-Uploaded once at tick close so the dashboard can render a browsable tree in
-the DebugFileRequest UI, rather than forcing the operator to guess paths.
-Entries are sorted so the payload is stable across identical folders, which
-keeps diffs readable when comparing two ticks side-by-side.
+Uploaded once at tick close. Entries are sorted so the payload is stable
+across identical folders, which keeps diffs readable when comparing two
+ticks side-by-side.
 
 Caps mirror the server's ``FILE_TREE_MAX_ENTRIES`` / ``FILE_TREE_MAX_JSON_BYTES``:
 we prune locally so the server does not reject a slightly-too-large payload
