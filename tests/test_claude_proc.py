@@ -196,12 +196,20 @@ def test_build_argv_omits_bypass_when_auto_mode(tmp_path: Path, monkeypatch: pyt
 
 
 def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Root + bypass + autoclaude user already provisioned: wrap with runuser, no install-time setup."""
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
-    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", lambda *_a, **_kw: None)
-    monkeypatch.setattr(claude_env, "share_claude_config", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: True)
     monkeypatch.setattr(claude_env, "share_repo", lambda *_a, **_kw: None)
     monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+
+    # Install-time helpers must NOT run during a tick. Wire raisers as guards.
+    def _must_not_run(*_a: object, **_kw: object) -> None:
+        raise AssertionError("install-time helper called during tick")
+
+    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
 
     argv = _build_claude_argv("hi", cwd=tmp_path)
     assert argv[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
@@ -209,20 +217,43 @@ def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: py
     assert "--permission-mode" in argv
 
 
+def test_build_argv_raises_when_autoclaude_user_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root + bypass + user missing: bail out, do NOT create the user mid-tick."""
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: False)
+
+    def _must_not_run(*_a: object, **_kw: object) -> None:
+        raise AssertionError("install-time helper called during tick")
+
+    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
+
+    with pytest.raises(UserCreationError) as excinfo:
+        _build_claude_argv("hi", cwd=tmp_path)
+    assert "autoclaude init --user-autoclaude" in str(excinfo.value)
+
+
 def test_build_argv_does_not_wrap_when_root_in_auto_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Root + defaultMode=auto: claude is fine without bypassPermissions, so do not provision the autoclaude user."""
+    """Root + defaultMode=auto: no wrapping, no provisioning checks."""
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
 
-    def _boom(*_a: object, **_kw: object) -> None:
-        raise AssertionError("ensure_autoclaude_user must not be called in auto mode")
+    def _must_not_run(*_a: object, **_kw: object) -> None:
+        raise AssertionError("autoclaude wrapper helper called in auto mode")
 
-    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _boom)
-    monkeypatch.setattr(claude_env, "share_claude_config", _boom)
-    monkeypatch.setattr(claude_env, "share_repo", _boom)
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_repo", _must_not_run)
+    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
 
     argv = _build_claude_argv("hi", cwd=tmp_path)
     assert argv[0] == "claude"

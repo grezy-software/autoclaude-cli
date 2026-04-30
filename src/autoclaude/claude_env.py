@@ -38,6 +38,8 @@ ISSUE_URL: Final[str] = "https://github.com/grezy-software/autoclaude-cli/issues
 # Per-process caches: avoid repeating expensive filesystem walks every tick.
 _shared_repos: set[str] = set()
 _shared_config: bool = False
+_shared_binary: bool = False
+_traversal_granted: set[str] = set()
 _logged_modes: set[str] = set()
 
 
@@ -106,6 +108,17 @@ def should_bypass_permissions(*, home: Path | None = None, cwd: Path | None = No
 def is_root() -> bool:
     """``True`` when the current process effective UID is 0."""
     return os.geteuid() == 0
+
+
+def autoclaude_user_exists() -> bool:
+    """Public probe for whether the dedicated ``autoclaude`` system user exists.
+
+    The runner uses this at tick time to decide whether to bail out with a
+    "run ``autoclaude init --user-autoclaude``" message rather than provisioning
+    the user mid-tick (which would surprise the operator and slow the first
+    step).
+    """
+    return _user_exists(AUTOCLAUDE_USER)
 
 
 def _user_exists(username: str) -> bool:
@@ -212,6 +225,57 @@ def ensure_autoclaude_user(
             )
 
 
+def _has_other_execute(path: Path) -> bool:
+    """``True`` when world-execute (o+x) is set, meaning anyone can traverse."""
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return False
+    return bool(mode & 0o001)
+
+
+def _grant_path_traversal(path: Path, *, group: str = AUTOCLAUDE_GROUP) -> None:
+    """Grant ``group`` traversal (``g+x``) on every directory ancestor of ``path``.
+
+    The autoclaude user can only ``execve`` ``/root/.local/bin/claude`` if it can
+    *traverse* every component of that path. ``/root`` defaults to ``0700`` and
+    blocks the kernel's path lookup before it ever reaches the binary, producing
+    a generic ``Permission denied`` from ``runuser``.
+
+    For each ancestor up to ``/``: chgrp to ``group`` and ``chmod g+x``. Any
+    ancestor that is already world-executable (``/home``, ``/usr``, ``/tmp``) is
+    skipped to avoid surprising chgrp side effects on system directories. The
+    leaf at ``path`` itself is given ``g+rx`` so callers can read/exec it.
+
+    Idempotent and cached per absolute leaf path.
+    """
+    target = path.absolute()
+    key = str(target)
+    if key in _traversal_granted:
+        return
+
+    ancestors: list[Path] = []
+    cur = target.parent
+    while cur != cur.parent:  # stop before "/"
+        ancestors.append(cur)
+        cur = cur.parent
+
+    # Apply from "/" downward so a missing chgrp on a top-level dir surfaces first.
+    for ancestor in reversed(ancestors):
+        if _has_other_execute(ancestor):
+            continue
+        _run_cmd(["chgrp", group, str(ancestor)])
+        _run_cmd(["chmod", "g+x", str(ancestor)])
+
+    if target.exists() and not _has_other_execute(target):
+        _run_cmd(["chgrp", group, str(target)])
+        if target.is_dir():
+            _run_cmd(["chmod", "g+rx", str(target)])
+        else:
+            _run_cmd(["chmod", "g+rx", str(target)])
+    _traversal_granted.add(key)
+
+
 def share_claude_config(
     *,
     username: str = AUTOCLAUDE_USER,
@@ -235,6 +299,9 @@ def share_claude_config(
         return
     _run_cmd(["chgrp", "-R", group, str(src)])
     _run_cmd(["chmod", "-R", "g+rwX", str(src)])
+    # Grant ancestor traversal so the autoclaude user can actually descend into
+    # this directory: chgrp on the leaf is useless if /root above it is 0700.
+    _grant_path_traversal(src, group=group)
     try:
         target_home = Path(pwd.getpwnam(username).pw_dir)
     except KeyError:
@@ -264,6 +331,35 @@ def share_repo(cwd: Path, *, group: str = AUTOCLAUDE_GROUP) -> None:
     _run_cmd(["chgrp", "-R", group, str(cwd)])
     _run_cmd(["chmod", "-R", "g+rwX", str(cwd)])
     _shared_repos.add(key)
+
+
+def share_claude_binary(*, group: str = AUTOCLAUDE_GROUP) -> None:
+    """Grant ``group`` access to the ``claude`` binary and every directory above it.
+
+    The binary often lives under ``/root/.local/bin/claude`` (a symlink into
+    ``/root/.local/share/claude/versions/<v>``). Both the symlink path AND the
+    resolved target path need traversable ancestors -- the kernel walks each
+    component on ``execve``. Cached per process so repeated ticks do not re-chgrp
+    the install tree.
+    """
+    global _shared_binary  # noqa: PLW0603
+    if _shared_binary:
+        return
+    binary = shutil.which("claude")
+    if not binary:
+        _log.warning("claude binary not found on PATH; skipping binary share")
+        _shared_binary = True
+        return
+    link_path = Path(binary)
+    _grant_path_traversal(link_path, group=group)
+    try:
+        target_path = link_path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        _log.warning("could not resolve claude symlink at %s: %s", link_path, exc)
+        target_path = link_path
+    if target_path != link_path:
+        _grant_path_traversal(target_path, group=group)
+    _shared_binary = True
 
 
 def wrap_for_user(argv: list[str], *, username: str = AUTOCLAUDE_USER) -> list[str]:
@@ -356,5 +452,7 @@ def reset_caches() -> None:
     """Clear per-process caches. Test-only; not part of the runtime contract."""
     _shared_repos.clear()
     _logged_modes.clear()
-    global _shared_config  # noqa: PLW0603
+    _traversal_granted.clear()
+    global _shared_config, _shared_binary  # noqa: PLW0603
     _shared_config = False
+    _shared_binary = False

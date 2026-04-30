@@ -323,8 +323,18 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
     # claude only refuses root + bypassPermissions; in auto mode root is fine and
     # we do not need to provision the autoclaude user / wrap with runuser.
     if bypass and claude_env.is_root():
-        claude_env.ensure_autoclaude_user()
-        claude_env.share_claude_config()
+        # Provisioning (user creation, ~/.claude chgrp, claude binary chgrp) is
+        # the responsibility of `autoclaude init` -- doing it mid-tick would slow
+        # the first step and surprise the operator. The only per-tick permission
+        # work is `share_repo`, since the worktree path varies per tick.
+        if not claude_env.autoclaude_user_exists():
+            msg = (
+                f"system user '{claude_env.AUTOCLAUDE_USER}' is not provisioned on this host, but "
+                "is required to run claude as non-root. "
+                "Run `autoclaude init --user-autoclaude` to create it (and adjust the necessary "
+                "permissions) before starting ticks."
+            )
+            raise UserCreationError(msg)
         claude_env.share_repo(cwd)
         argv = claude_env.wrap_for_user(argv)
         claude_env.log_mode_once(f"[claude_env] sandbox_user={claude_env.AUTOCLAUDE_USER} (host UID=0)")

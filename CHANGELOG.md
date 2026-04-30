@@ -1,3 +1,17 @@
+## [2.4.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.4...v2.4.5) (2026-04-30)
+
+
+### Bug Fixes
+
+* **permission:** adjust permission of claude user ([1497330](https://github.com/grezy-software/autoclaude-cli/commit/1497330e14aee0d326968060188d5c914923c5c9))
+
+## [2.4.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.3...v2.4.4) (2026-04-30)
+
+
+### Bug Fixes
+
+* **profiles:** added possibility to pause one profile at a time ([bb7a37a](https://github.com/grezy-software/autoclaude-cli/commit/bb7a37a0a95ea2fc283e69a9b3c898de356fccd5))
+
 ## [2.4.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.2...v2.4.3) (2026-04-30)
 
 
