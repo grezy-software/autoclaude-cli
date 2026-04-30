@@ -42,11 +42,6 @@ _AGENT_MODEL = "opus"
 # the Steps table shows a single-line takeaway rather than a wall of text.
 _SHORT_SUMMARY_CHARS = 240
 
-# Truncation budgets for streamed event payloads. Keeps individual log rows
-# small enough that long ticks do not blow out the backend.
-_EVENT_SNIPPET_CHARS = 240
-_EVENT_TEXT_BUDGET = 4000
-
 # Convention for agents that hit an unrecoverable precondition (missing remote,
 # auth failure detected mid-run, etc.). When the agent ends its response with
 # this marker on its own line, the runner treats the step as failed even though
@@ -105,12 +100,6 @@ def _truncate(text: str, limit: int = _SHORT_SUMMARY_CHARS) -> str:
     return collapsed[: limit - 1].rstrip() + "…"
 
 
-def _truncate_text(text: str, limit: int = _EVENT_TEXT_BUDGET) -> str:
-    if not text:
-        return ""
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 def _stringify_content(content: Any) -> str:
     """Flatten a tool_result content array to a string for log payloads."""
     if isinstance(content, list):
@@ -132,33 +121,21 @@ def _tool_input_summary(name: str, inp: dict[str, Any]) -> str:  # noqa: PLR0911
     if not isinstance(inp, dict):
         return ""
     if name == "Bash":
-        return _truncate(inp.get("command", ""), _EVENT_SNIPPET_CHARS)
+        return inp.get("command", "")
     if name in {"Read", "Edit", "Write", "NotebookEdit"}:
-        path = inp.get("file_path") or inp.get("notebook_path") or ""
-        return _truncate(str(path), _EVENT_SNIPPET_CHARS)
+        return str(inp.get("file_path") or inp.get("notebook_path") or "")
     if name in {"Glob", "Grep"}:
-        return _truncate(inp.get("pattern", ""), _EVENT_SNIPPET_CHARS)
+        return inp.get("pattern", "")
     if name == "WebFetch":
-        return _truncate(inp.get("url", ""), _EVENT_SNIPPET_CHARS)
+        return inp.get("url", "")
     if name == "WebSearch":
-        return _truncate(inp.get("query", ""), _EVENT_SNIPPET_CHARS)
+        return inp.get("query", "")
     if name in {"Task", "Agent"}:
-        return _truncate(inp.get("description") or inp.get("prompt", ""), _EVENT_SNIPPET_CHARS)
+        return inp.get("description") or inp.get("prompt", "")
     try:
-        return _truncate(json.dumps(inp, default=str), _EVENT_SNIPPET_CHARS)
+        return json.dumps(inp, default=str)
     except (TypeError, ValueError):
         return ""
-
-
-def _truncate_input(inp: Any) -> Any:
-    """Cap a tool_use input dict so log payloads stay small."""
-    try:
-        encoded = json.dumps(inp, default=str)
-    except (TypeError, ValueError):
-        return {"_unserialisable": True}
-    if len(encoded) <= _EVENT_TEXT_BUDGET:
-        return inp
-    return {"_truncated": True, "preview": encoded[: _EVENT_TEXT_BUDGET - 32]}
 
 
 def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
@@ -192,11 +169,11 @@ def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
                 text = block.get("text") or ""
                 _log.info(
                     "assistant: %s",
-                    _truncate(text, _EVENT_SNIPPET_CHARS),
+                    text,
                     extra={
                         "source": "claude_stdout",
                         "step_id": step_id,
-                        "payload": {"event": "assistant_text", "text": _truncate_text(text)},
+                        "payload": {"event": "assistant_text", "text": text},
                     },
                 )
             elif btype == "tool_use":
@@ -213,7 +190,7 @@ def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
                             "event": "tool_use",
                             "tool": name,
                             "tool_use_id": block.get("id"),
-                            "input": _truncate_input(block.get("input") or {}),
+                            "input": block.get("input") or {},
                         },
                     },
                 )
@@ -230,7 +207,7 @@ def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
             log_fn(
                 "%s: %s",
                 label,
-                _truncate(content_str, _EVENT_SNIPPET_CHARS),
+                content_str,
                 extra={
                     "source": "claude_stdout",
                     "step_id": step_id,
@@ -238,7 +215,7 @@ def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
                         "event": "tool_result",
                         "tool_use_id": block.get("tool_use_id"),
                         "is_error": is_error,
-                        "content": _truncate_text(content_str),
+                        "content": content_str,
                     },
                 },
             )
@@ -288,7 +265,7 @@ def _read_stdout(
                 event = json.loads(text)
             except (ValueError, TypeError):
                 _log.info(
-                    text if len(text) <= _EVENT_SNIPPET_CHARS else text[: _EVENT_SNIPPET_CHARS - 1] + "…",
+                    text,
                     extra={"source": "claude_stdout", "step_id": step_id, "payload": {"event": "raw", "raw": text}},
                 )
                 continue
