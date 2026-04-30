@@ -13,9 +13,13 @@ from autoclaude.claude_proc import ClaudeResult, detect_token_exhaustion
 from autoclaude.runner import (
     EXIT_OK,
     EXIT_TOKEN_EXHAUSTED,
+    STATUS_ABANDONED,
+    STATUS_FAILED,
+    STATUS_SUCCEEDED,
     _apply_resumption,
     _build_resumption_banner,
     _execute_steps,
+    _notify_tick_failure,
     _TickState,
     run_tick,
 )
@@ -370,3 +374,73 @@ def test_execute_steps_abandons_when_shutdown_flag_is_set(tmp_path, monkeypatch)
     assert "shutdown" in state.error
     # The pre-step shutdown check must exit before calling open_step / run_step.
     assert client.open_step_calls == []
+
+
+# --- _notify_tick_failure ---------------------------------------------------
+
+
+class _DiscordCapturingClient:
+    """Tiny stand-in capturing only ``post_discord_message`` calls."""
+
+    def __init__(self, *, raise_error: ApiError | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._raise = raise_error
+
+    def post_discord_message(self, agent_config_id: int, content: str) -> dict[str, Any]:
+        if self._raise is not None:
+            raise self._raise
+        self.calls.append({"agent_config_id": agent_config_id, "content": content})
+        return {"ok": True}
+
+
+def test_notify_tick_failure_skips_on_success() -> None:
+    client = _DiscordCapturingClient()
+    state = _TickState(tick_id=1, status=STATUS_SUCCEEDED, agent_config_id=42)
+    _notify_tick_failure(client, state)  # type: ignore[arg-type]
+    assert client.calls == []
+
+
+def test_notify_tick_failure_skips_on_abandoned() -> None:
+    client = _DiscordCapturingClient()
+    state = _TickState(tick_id=1, status=STATUS_ABANDONED, agent_config_id=42)
+    _notify_tick_failure(client, state)  # type: ignore[arg-type]
+    assert client.calls == []
+
+
+def test_notify_tick_failure_skips_when_no_agent_config_id() -> None:
+    client = _DiscordCapturingClient()
+    state = _TickState(tick_id=1, status=STATUS_FAILED, error="boom", agent_config_id=None)
+    _notify_tick_failure(client, state)  # type: ignore[arg-type]
+    assert client.calls == []
+
+
+def test_notify_tick_failure_posts_when_failed() -> None:
+    client = _DiscordCapturingClient()
+    state = _TickState(
+        tick_id=42,
+        status=STATUS_FAILED,
+        error="agent::foo -> exhausted retries",
+        total_cost=0.0123,
+        total_tokens=1234,
+        agent_config_id=7,
+    )
+    state.branch_url = "https://example.com/branch"
+    _notify_tick_failure(client, state)  # type: ignore[arg-type]
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["agent_config_id"] == 7
+    content = call["content"]
+    assert "tick #42" in content
+    assert "FAILED" in content
+    assert "exhausted retries" in content
+    assert "$0.0123" in content
+    assert "1234" in content
+    assert "https://example.com/branch" in content
+
+
+def test_notify_tick_failure_swallows_api_error() -> None:
+    """A Discord post failure must not bubble up — it's informational."""
+    client = _DiscordCapturingClient(raise_error=ApiError("503 Discord down"))
+    state = _TickState(tick_id=1, status=STATUS_FAILED, error="boom", agent_config_id=7)
+    # No exception expected.
+    _notify_tick_failure(client, state)  # type: ignore[arg-type]

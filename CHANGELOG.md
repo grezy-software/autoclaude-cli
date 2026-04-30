@@ -1,3 +1,26 @@
+## [2.4.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.2...v2.4.3) (2026-04-30)
+
+
+### Bug Fixes
+
+* **diag:** improve diag logs for permission ([4e5da37](https://github.com/grezy-software/autoclaude-cli/commit/4e5da3785e1bc97399cd07af43ac78cd3e575f1f))
+
+## [2.4.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.1...v2.4.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* **autoclaude:** add more logs to debug permissions configuration ([10c9218](https://github.com/grezy-software/autoclaude-cli/commit/10c92189c7192e3c8671bc3171592f52042eddc5))
+
+## [2.4.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.0...v2.4.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **docs:** removed extra lines ([cedf896](https://github.com/grezy-software/autoclaude-cli/commit/cedf89612aa602b270fedf4017afc2e2793c03c7))
+* **root:** solve permission on autoclaude ([2a17e91](https://github.com/grezy-software/autoclaude-cli/commit/2a17e9184d963a51b3e90a97c2732e18c4c03049))
+* **root:** Solve root permission configuration ([263f428](https://github.com/grezy-software/autoclaude-cli/commit/263f428c680f0020e553a1c8a0bdfe3fe261f928))
+
 # [2.4.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.2...v2.4.0) (2026-04-29)
 
 
