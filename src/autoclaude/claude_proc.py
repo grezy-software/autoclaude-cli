@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from autoclaude import claude_env
+from autoclaude.claude_env import UserCreationError
 from autoclaude.logger import get_logger
 
 _log = get_logger("claude")
@@ -108,6 +110,41 @@ def _tee_stream(stream: IO[str], source: str, *, buffer: list[str], step_id: int
         stream.close()
 
 
+def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
+    """Compose the ``claude`` argv adapted to host environment.
+
+    - Drops ``--permission-mode bypassPermissions`` when ``defaultMode=auto`` is
+      already configured (in user or project settings).
+    - When running as root, provisions the ``autoclaude`` user/group, shares the
+      claude config and repo, and wraps the argv to drop privileges via
+      ``runuser`` (or ``sudo`` fallback).
+    """
+    argv: list[str] = [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "json",
+        "--model",
+        _AGENT_MODEL,
+    ]
+    bypass = claude_env.should_bypass_permissions(cwd=cwd)
+    if bypass:
+        argv.extend(["--permission-mode", "bypassPermissions"])
+        claude_env.log_mode_once("[claude_env] permission_mode=bypassPermissions (no defaultMode=auto)")
+    else:
+        claude_env.log_mode_once("[claude_env] permission_mode=<unset> (defaultMode=auto detected)")
+    # claude only refuses root + bypassPermissions; in auto mode root is fine and
+    # we do not need to provision the autoclaude user / wrap with runuser.
+    if bypass and claude_env.is_root():
+        claude_env.ensure_autoclaude_user()
+        claude_env.share_claude_config()
+        claude_env.share_repo(cwd)
+        argv = claude_env.wrap_for_user(argv)
+        claude_env.log_mode_once(f"[claude_env] sandbox_user={claude_env.AUTOCLAUDE_USER} (host UID=0)")
+    return argv
+
+
 def run_step(
     prompt: str,
     *,
@@ -128,18 +165,25 @@ def run_step(
     subprocess_env = os.environ.copy()
     if env:
         subprocess_env.update(env)
+    try:
+        argv = _build_claude_argv(prompt, cwd=cwd)
+    except UserCreationError as exc:
+        duration_ms = int((time.monotonic() - started) * 1000)
+        message = str(exc)
+        _log.error(
+            "claude subprocess could not start: %s",
+            message,
+            extra={"source": "claude_exit", "step_id": step_id, "payload": {"returncode": -1, "duration_ms": duration_ms}},
+        )
+        return ClaudeResult(
+            ok=False,
+            stdout="",
+            stderr=message,
+            duration_ms=duration_ms,
+            summary=message,
+        )
     proc = subprocess.Popen(
-        [
-            "claude",
-            "-p",
-            prompt,
-            "--output-format",
-            "json",
-            "--model",
-            _AGENT_MODEL,
-            "--permission-mode",
-            "bypassPermissions",
-        ],
+        argv,
         cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

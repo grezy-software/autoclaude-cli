@@ -96,6 +96,39 @@ autoclaude use staging       # set active profile (persists in config.toml)
 
 Override the workspace root with the `AUTOCLAUDE_HOME` environment variable.
 
+## Running as root
+
+The `claude` CLI refuses to combine `--permission-mode bypassPermissions` (or
+`--dangerously-skip-permissions`) with an effective UID of 0. autoclaude detects
+this case automatically and:
+
+1. Creates a system group and user named `autoclaude` (idempotent), and adds
+   `root` to the `autoclaude` group so both accounts can share files.
+2. Symlinks `/home/autoclaude/.claude` to root's `~/.claude` so the spawned
+   process reuses the same authentication and settings.
+3. Grants the `autoclaude` group rwX on the working repo.
+4. Wraps the `claude` invocation with
+   `runuser -u autoclaude --preserve-environment --` (falling back to
+   `sudo -E -u autoclaude` if `runuser` is unavailable).
+
+If neither `useradd`/`adduser` nor `runuser`/`sudo` are present (e.g. minimal
+busybox containers), autoclaude fails the step with a clear message pointing
+at <https://github.com/grezy-software/autoclaude-cli/issues> so we can extend
+support for that platform.
+
+### Permission mode auto-detection
+
+If your `~/.claude/settings.json` (or the project-level
+`<repo>/.claude/settings.json`, which takes precedence) already has:
+
+```json
+{ "permissions": { "defaultMode": "auto" } }
+```
+
+then autoclaude will spawn `claude` **without** the `--permission-mode` flag and
+let claude's auto mode handle permissions itself. Otherwise it keeps passing
+`--permission-mode bypassPermissions` as before.
+
 ## License
 
 MIT. See `LICENSE`.
