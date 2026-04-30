@@ -211,14 +211,13 @@ def login(
 
 @app.command(name="profiles")
 def profiles_list() -> None:
-    """List configured profiles, marking the active one."""
+    """List configured profiles."""
     cfg = Config.load()
     if not cfg.profiles:
         _log.warning("[yellow]no profiles configured[/yellow]; run `autoclaude login`.", extra={"source": "cli"})
         return
     for name, prof in sorted(cfg.profiles.items()):
-        marker = "*" if name == cfg.active else " "
-        _log.info("%s %s -> %s", marker, name, prof.url or "[dim]no url[/dim]", extra={"source": "cli"})
+        _log.info("%s -> %s", name, prof.url or "[dim]no url[/dim]", extra={"source": "cli"})
 
 
 @app.command()
