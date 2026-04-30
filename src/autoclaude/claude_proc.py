@@ -54,10 +54,14 @@ _SHORT_SUMMARY_CHARS = 240
 _DEFAULT_POST_RESULT_GRACE_SECS = 30.0
 
 # Watchdog: kill if no output has been seen on either stream for this long.
-# Defense-in-depth for hangs that occur BEFORE the result event. Default off
-# (``None``) because legitimate long tool calls can be silent for several
-# minutes; opt-in per call site once a safe value is established.
-_DEFAULT_IDLE_TIMEOUT_SECS: float | None = None
+# Catches hangs that occur BEFORE the result event (pre-init hang where claude
+# never emits its ``system`` event, mid-stream Bun freeze, etc.). Set to 5 min:
+# in ``-p stream-json --verbose`` mode claude streams an event for every
+# tool_use, tool_result, and incremental assistant text block, so a 5 min total
+# silence is well outside normal behavior. Long single tool calls (e.g. a slow
+# pytest) emit ``tool_use`` immediately and are bounded by the tool's own
+# timeout, so they do not trigger a false positive.
+_DEFAULT_IDLE_TIMEOUT_SECS: float | None = 300.0
 
 # Polling interval of the watchdog loop. The trade-off is between extra wakeups
 # and the granularity at which kill_reason is detected. 0.5s is well below the
@@ -67,6 +71,13 @@ _WATCHDOG_POLL_SECS = 0.5
 # After SIGTERM, the time we wait before escalating to SIGKILL. ``runuser``
 # forwards SIGTERM to its claude child, so this also covers the wrapper case.
 _TERM_GRACE_SECS = 5.0
+
+# Sentinel for ``run_step`` keyword arguments that should resolve to the
+# module-level default at call time, not at function-definition time. Using
+# ``None`` would conflict with ``idle_timeout=None`` which legitimately means
+# "watchdog disabled". A dedicated sentinel keeps both semantics distinct and
+# lets tests / callers re-tune the default by patching the module constant.
+_USE_DEFAULT: Any = object()
 
 # Convention for agents that hit an unrecoverable precondition (missing remote,
 # auth failure detected mid-run, etc.). When the agent ends its response with
@@ -492,13 +503,13 @@ def _user_creation_failure(exc: UserCreationError, *, started: float, step_id: i
     return ClaudeResult(ok=False, stdout="", stderr=message, duration_ms=duration_ms, summary=message)
 
 
-def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, parse, return — splitting further hurts readability)
+def run_step(  # noqa: PLR0912, PLR0915 (subprocess lifecycle: setup, threads, wait, parse, return — splitting further hurts readability)
     prompt: str,
     *,
     cwd: Path,
     timeout: int = 3600,
-    post_result_grace: float = _DEFAULT_POST_RESULT_GRACE_SECS,
-    idle_timeout: float | None = _DEFAULT_IDLE_TIMEOUT_SECS,
+    post_result_grace: float = _USE_DEFAULT,
+    idle_timeout: float | None = _USE_DEFAULT,
     step_id: int | None = None,
     env: dict[str, str] | None = None,
 ) -> ClaudeResult:
@@ -510,8 +521,14 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
 
     ``post_result_grace`` and ``idle_timeout`` drive the parent-side watchdog
     that protects the tick from a Bun-side hang where claude has finished its
-    work but never exits (see ``_wait_with_watchdog``).
+    work but never exits (see ``_wait_with_watchdog``). Both default to the
+    module-level constants resolved at call time so tests and operators can
+    re-tune them by patching the module without re-importing the function.
     """
+    if post_result_grace is _USE_DEFAULT:
+        post_result_grace = _DEFAULT_POST_RESULT_GRACE_SECS
+    if idle_timeout is _USE_DEFAULT:
+        idle_timeout = _DEFAULT_IDLE_TIMEOUT_SECS
     started = time.monotonic()
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []

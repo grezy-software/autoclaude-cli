@@ -457,6 +457,36 @@ def test_run_step_kills_after_idle_timeout_when_no_output(
     assert "stdout idle" in result.stderr
 
 
+def test_run_step_default_idle_timeout_kills_pre_init_hang(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce the pre-init hang and verify the default idle_timeout fires.
+
+    Regression guard: in 2.5.10 the idle_timeout default was ``None``, which
+    let a claude subprocess that never emitted a ``system`` event hold the
+    tick for the full 1h timeout. The default is now 300s; we override it for
+    the test but rely on the same code path that production uses.
+    """
+    _write_fake_claude_script(
+        tmp_path,
+        monkeypatch,
+        body="time.sleep(120)\n",
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    # Use the production default code path: do not pass idle_timeout explicitly.
+    # We can't wait 300s in a unit test, so we monkeypatch the module default.
+    monkeypatch.setattr(claude_proc, "_DEFAULT_IDLE_TIMEOUT_SECS", 0.5)
+
+    result = run_step("anything", cwd=cwd, step_id=1, timeout=30)
+
+    assert result.duration_ms < 5_000
+    assert result.ok is False
+    assert "stdout idle" in result.stderr
+
+
 def test_run_step_natural_exit_unaffected_by_watchdog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
