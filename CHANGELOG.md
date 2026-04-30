@@ -1,3 +1,10 @@
+## [2.5.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.5...v2.5.6) (2026-04-30)
+
+
+### Bug Fixes
+
+* **runner:** fix issue on `_reconcile_tool` method ([932914e](https://github.com/grezy-software/autoclaude-cli/commit/932914e462614e35ed03e5eafd9422b297279176))
+
 ## [2.5.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.4...v2.5.5) (2026-04-30)
 
 
