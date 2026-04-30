@@ -16,7 +16,7 @@ from autoclaude.claude_proc import (
     _build_claude_argv,
     _build_short_summary,
     _extract_fail_marker,
-    _parse_result_metadata,
+    _extract_token_total,
     run_step,
 )
 
@@ -28,38 +28,23 @@ def _isolate_claude_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
 
 
-def test_parse_result_metadata_reads_cost_and_session() -> None:
-    blob = '{"session_id": "abc", "total_cost_usd": 0.0125}'
-    session, cost, tokens, parsed = _parse_result_metadata(blob)
-    assert session == "abc"
-    assert cost == pytest.approx(0.0125)
-    assert tokens == 0
-    assert parsed is not None
-    assert parsed["session_id"] == "abc"
+def test_extract_token_total_sums_nested_usage_tokens() -> None:
+    parsed = {
+        "session_id": "abc",
+        "total_cost_usd": 0.5,
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_creation_input_tokens": 20,
+            "cache_read_input_tokens": 10,
+        },
+    }
+    assert _extract_token_total(parsed) == 180
 
 
-def test_parse_result_metadata_handles_missing_fields() -> None:
-    session, cost, tokens, parsed = _parse_result_metadata("not-json")
-    assert session == ""
-    assert cost == 0.0
-    assert tokens == 0
-    assert parsed is None
-
-
-def test_parse_result_metadata_sums_nested_usage_tokens() -> None:
-    blob = (
-        '{"session_id": "abc", "total_cost_usd": 0.5, '
-        '"usage": {"input_tokens": 100, "output_tokens": 50, '
-        '"cache_creation_input_tokens": 20, "cache_read_input_tokens": 10}}'
-    )
-    _, _, tokens, _ = _parse_result_metadata(blob)
-    assert tokens == 180
-
-
-def test_parse_result_metadata_sums_top_level_usage_tokens() -> None:
-    blob = '{"session_id": "abc", "input_tokens": 5, "output_tokens": 3}'
-    _, _, tokens, _ = _parse_result_metadata(blob)
-    assert tokens == 8
+def test_extract_token_total_sums_top_level_usage_tokens() -> None:
+    parsed = {"session_id": "abc", "input_tokens": 5, "output_tokens": 3}
+    assert _extract_token_total(parsed) == 8
 
 
 def test_run_step_tees_stdout_and_parses_cost(tmp_path, monkeypatch) -> None:
@@ -74,7 +59,8 @@ def test_run_step_tees_stdout_and_parses_cost(tmp_path, monkeypatch) -> None:
         "import json, sys\n"
         'sys.stderr.write("argv=" + " ".join(sys.argv[1:]) + "\\n")\n'
         'sys.stderr.write("warmup line\\n")\n'
-        'print(json.dumps({"session_id": "sess-1", "total_cost_usd": 0.42}))\n',
+        'print(json.dumps({"type": "system", "subtype": "init", "session_id": "sess-1", "model": "opus"}))\n'
+        'print(json.dumps({"type": "result", "is_error": False, "session_id": "sess-1", "total_cost_usd": 0.42, "result": "done"}))\n',
         encoding="utf-8",
     )
     fake_script.chmod(0o755)
@@ -166,7 +152,7 @@ def _write_fake_claude_emitting(payload: dict, tmp_path, monkeypatch) -> None:
     fake_script = fake_claude_dir / "claude"
     encoded = json.dumps(payload)
     fake_script.write_text(
-        f"#!{sys.executable}\nimport sys\nsys.stdout.write({encoded!r})\nsys.exit(0)\n",
+        f"#!{sys.executable}\nimport sys\nsys.stdout.write({encoded!r} + '\\n')\nsys.exit(0)\n",
         encoding="utf-8",
     )
     fake_script.chmod(0o755)

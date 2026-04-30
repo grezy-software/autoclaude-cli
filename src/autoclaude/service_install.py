@@ -134,12 +134,12 @@ def _service_path() -> str:
     return ":".join(pieces)
 
 
-def _macos_plist(binary: str, profile: str, kind: ServiceKind) -> str:
+def _macos_plist(binary: str, kind: ServiceKind) -> str:
     label = _label(kind)
     subcommand = _service_subcommand(kind)
     program_args = "\n".join(
         f"        <string>{piece}</string>"
-        for piece in [*binary.split(), subcommand, "--profile", profile]
+        for piece in [*binary.split(), subcommand]
     )
     log_dir = Path.home() / ".config" / "autoclaude" / "logs"
     return f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -185,10 +185,10 @@ def _macos_remove_legacy() -> None:
         legacy_plist.unlink()
 
 
-def _macos_bootstrap(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+def _macos_bootstrap(kind: ServiceKind, binary: str) -> InstallResult:
     plist_path = _macos_plist_path(kind)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_text(_macos_plist(binary, profile, kind))
+    plist_path.write_text(_macos_plist(binary, kind))
     uid = _macos_uid()
     label = _label(kind)
     _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
@@ -236,7 +236,7 @@ def _systemd_unit_path(kind: ServiceKind) -> Path:
     return Path(base) / "systemd" / "user" / _systemd_unit(kind)
 
 
-def _systemd_unit_body(binary: str, profile: str, kind: ServiceKind) -> str:
+def _systemd_unit_body(binary: str, kind: ServiceKind) -> str:
     subcommand = _service_subcommand(kind)
     return f"""[Unit]
 Description=AutoClaude {kind} service
@@ -245,7 +245,7 @@ After=network-online.target
 [Service]
 Type=simple
 Environment=PATH={_service_path()}
-ExecStart={binary} {subcommand} --profile {profile}
+ExecStart={binary} {subcommand}
 Restart=on-failure
 RestartSec=10
 StandardOutput=append:%h/.config/autoclaude/logs/{kind}.out.log
@@ -264,10 +264,10 @@ def _systemd_remove_legacy() -> None:
     _run(["systemctl", "--user", "daemon-reload"])
 
 
-def _systemd_install(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+def _systemd_install(kind: ServiceKind, binary: str) -> InstallResult:
     unit_path = _systemd_unit_path(kind)
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    unit_path.write_text(_systemd_unit_body(binary, profile, kind))
+    unit_path.write_text(_systemd_unit_body(binary, kind))
     _run(["systemctl", "--user", "daemon-reload"])
     result = _run(["systemctl", "--user", "enable", "--now", _systemd_unit(kind)])
     if result.returncode != 0:
@@ -305,7 +305,7 @@ def _systemd_enable(kind: ServiceKind) -> None:
 # -- Windows / schtasks -----------------------------------------------------
 
 
-def _windows_install(kind: ServiceKind, binary: str, profile: str) -> InstallResult:
+def _windows_install(kind: ServiceKind, binary: str) -> InstallResult:
     name = _schtasks_name(kind)
     subcommand = _service_subcommand(kind)
     cmd = [
@@ -319,7 +319,7 @@ def _windows_install(kind: ServiceKind, binary: str, profile: str) -> InstallRes
         "/TN",
         name,
         "/TR",
-        f'"{binary}" {subcommand} --profile {profile}',
+        f'"{binary}" {subcommand}',
     ]
     result = _run(cmd)
     if result.returncode != 0:
@@ -375,14 +375,14 @@ def _remove_legacy() -> None:
         _windows_remove_legacy()
 
 
-def install_service(kind: ServiceKind, profile: str) -> InstallResult:
+def install_service(kind: ServiceKind) -> InstallResult:
     binary = _resolve_autoclaude_binary()
     if sys.platform == "darwin":
-        return _macos_bootstrap(kind, binary, profile)
+        return _macos_bootstrap(kind, binary)
     if sys.platform.startswith("linux"):
-        return _systemd_install(kind, binary, profile)
+        return _systemd_install(kind, binary)
     if sys.platform.startswith("win"):
-        return _windows_install(kind, binary, profile)
+        return _windows_install(kind, binary)
     msg = f"unsupported platform: {sys.platform}"
     raise ServiceInstallError(msg)
 
@@ -409,10 +409,16 @@ def status_service(kind: ServiceKind) -> InstallResult:
     raise ServiceInstallError(msg)
 
 
-def install_all(profile: str) -> list[InstallResult]:
-    """Install both heartbeat and scheduler services for ``profile``."""
+def install_all() -> list[InstallResult]:
+    """Install both heartbeat and scheduler services.
+
+    Both services run all configured profiles sequentially per cycle, so
+    no profile binding is needed at install time. Adding or removing a
+    profile via ``autoclaude login`` takes effect on the next cycle
+    without reinstalling units.
+    """
     _remove_legacy()
-    return [install_service("heartbeat", profile), install_service("scheduler", profile)]
+    return [install_service("heartbeat"), install_service("scheduler")]
 
 
 def uninstall_all() -> list[InstallResult]:
@@ -436,9 +442,9 @@ def pause_scheduler() -> InstallResult:
     raise ServiceInstallError(msg)
 
 
-def play_scheduler(profile: str) -> InstallResult:
+def play_scheduler() -> InstallResult:
     """(Re-)enable and start the scheduler. Reinstalls the unit if needed."""
-    return install_service("scheduler", profile)
+    return install_service("scheduler")
 
 
 __all__ = [

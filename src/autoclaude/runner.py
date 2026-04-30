@@ -148,7 +148,7 @@ def _apply_resumption(steps: list[dict[str, Any]], resumed_from: dict[str, Any] 
     first["prompt"] = f"{banner}\n\n{first['prompt']}"
 
 
-def _step_env(client: ApiClient, step: dict[str, Any]) -> dict[str, str]:
+def _step_env(client: ApiClient, step: dict[str, Any], *, tick_id: int) -> dict[str, str]:
     """Env vars handed to the claude subprocess for tool slash commands.
 
     Tool manifests ship slash commands that curl back to the AutoClaude server
@@ -162,6 +162,7 @@ def _step_env(client: ApiClient, step: dict[str, Any]) -> dict[str, str]:
         "AUTOCLAUDE_SERVER": client.base_url,
         "AUTOCLAUDE_API_KEY": client.api_key,
         "AUTOCLAUDE_AGENT_CONFIG_ID": "" if agent_config_id is None else str(agent_config_id),
+        "AUTOCLAUDE_TICK_ID": str(tick_id),
     }
 
 
@@ -381,7 +382,7 @@ def _execute_steps(  # noqa: PLR0911
             prompt,
             cwd=repo_checkout,
             step_id=step_id,
-            env=_step_env(client, step),
+            env=_step_env(client, step, tick_id=state.tick_id),
         )
         storage.write_step_streams(state.tick_id, step_id, stdout=result.stdout, stderr=result.stderr)
         state.total_cost += result.total_cost_usd
@@ -543,7 +544,7 @@ def _run_tool_steps(
             prompt,
             cwd=repo_checkout,
             step_id=tool_step_id,
-            env=_step_env(client, parent_step),
+            env=_step_env(client, parent_step, tick_id=state.tick_id),
         )
         storage.write_step_streams(state.tick_id, tool_step_id, stdout=result.stdout, stderr=result.stderr)
         state.total_cost += result.total_cost_usd

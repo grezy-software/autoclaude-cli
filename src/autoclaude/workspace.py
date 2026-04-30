@@ -222,6 +222,9 @@ class Workspace:
         _git(["worktree", "prune"], cwd=self.clone_path, check=False)
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
+        # A previous tick run may have left the branch behind (remove_worktree
+        # preserves branches by design). On retry, drop it so `-b` succeeds.
+        _git(["branch", "-D", branch], cwd=self.clone_path, check=False)
         _git(
             ["worktree", "add", "-b", branch, str(target), base],
             cwd=self.clone_path,

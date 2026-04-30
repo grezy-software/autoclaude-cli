@@ -1,3 +1,66 @@
+# [2.4.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.2...v2.4.0) (2026-04-29)
+
+
+### Features
+
+* **runner:** expose AUTOCLAUDE_TICK_ID to step subprocess env ([a09ddc6](https://github.com/grezy-software/autoclaude-cli/commit/a09ddc6c216a8dffa8c3d5910ee213847fd0ff94))
+
+## [2.3.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.1...v2.3.2) (2026-04-29)
+
+
+### Bug Fixes
+
+* **claude_proc:** propagate logger context to reader threads ([d7d457a](https://github.com/grezy-software/autoclaude-cli/commit/d7d457a7d4bad44342f9fb56c2000ff8a5f83cc0))
+
+## [2.3.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.3.0...v2.3.1) (2026-04-29)
+
+
+### Bug Fixes
+
+* **logger:** escape profile bracket so Rich does not swallow it ([826d708](https://github.com/grezy-software/autoclaude-cli/commit/826d708786be9dd8640cedf38a62fe961858fe29))
+
+# [2.3.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.2.0...v2.3.0) (2026-04-29)
+
+
+### Features
+
+* **claude_proc:** stream JSONL events to logger in real time ([f419126](https://github.com/grezy-software/autoclaude-cli/commit/f41912676f9b209328948651ba6a92a3ae7972a9))
+
+# [2.2.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.1.0...v2.2.0) (2026-04-29)
+
+
+### Features
+
+* **cli:** show status for every profile ([e847801](https://github.com/grezy-software/autoclaude-cli/commit/e8478016aa33c8f986a0b0749e926dfcd70cb044))
+
+# [2.1.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.0.0...v2.1.0) (2026-04-29)
+
+
+### Features
+
+* **logger:** tag log lines with active profile ([ceab4f6](https://github.com/grezy-software/autoclaude-cli/commit/ceab4f63a97d1f540321f67dc75d75fa6906b654))
+
+# [2.0.0](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.5...v2.0.0) (2026-04-29)
+
+
+### Bug Fixes
+
+* **workspace:** drop stale branch before recreating tick worktree ([1c71932](https://github.com/grezy-software/autoclaude-cli/commit/1c719320677683eec2d8cefaea2c037d756ed77a))
+
+
+### Features
+
+* **cli:** tick all profiles sequentially by default ([697c485](https://github.com/grezy-software/autoclaude-cli/commit/697c4859b1f9e6d2be20435537c5f2915f83ce4c))
+
+
+### BREAKING CHANGES
+
+* **cli:** `install_service`, `install_all`, `play_scheduler`,
+and the platform-specific install helpers no longer take a profile
+argument. The `use` and `switch` CLI commands are gone.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
 ## [1.21.5](https://github.com/grezy-software/autoclaude-cli/compare/v1.21.4...v1.21.5) (2026-04-29)
 
 

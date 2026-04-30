@@ -188,18 +188,24 @@ def _make_response(*, latest: str = "", minimum: str = "") -> dict[str, Any]:
 def test_daemon_hard_stops_when_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_tick_once`` must raise SystemExit(2) when below ``min_version``."""
 
+    class _Profile:
+        name = "test"
+
     class _Client:
+        profile = _Profile()
+
         def heartbeat(self, **_: Any) -> dict[str, Any]:
             return _make_response(latest="9.0.0", minimum="9.0.0")
 
     monkeypatch.setattr(update_check, "_native_notify", lambda *_: True)
+    client = _Client()
     daemon = Daemon(
-        _Client(),
+        client,
         cli_version="1.0.0",
         interval=0.01,
         identity=InstallationIdentity(installation_id="x", hostname="h", os_platform="linux"),
     )
     with pytest.raises(SystemExit) as exc:
-        daemon._tick_once()  # noqa: SLF001
+        daemon._tick_once(client)  # noqa: SLF001
     assert exc.value.code == 2
     assert daemon._stop.is_set()  # noqa: SLF001

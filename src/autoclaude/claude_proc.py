@@ -1,16 +1,16 @@
 """Invoke the ``claude`` CLI for one agent step and stream its output.
 
-``run_step`` spawns ``claude -p <prompt> --output-format json`` via
-``subprocess.Popen`` and tees each stdout/stderr line to the autoclaude
-logger in real time. The full streams are still buffered in memory so
-the final JSON can be parsed for ``session_id``, cost, and the
-human-readable ``result`` text.
+``run_step`` spawns ``claude -p <prompt> --output-format stream-json --verbose``
+via ``subprocess.Popen`` and parses each JSONL event off stdout in real time.
+Per-event log records are pushed through the autoclaude logger so the backend
+sees what the agent is doing while it runs (tool calls, tool results,
+assistant text), not only the final JSON blob at exit.
 
 Failure detection has three layers:
 
 1. ``returncode != 0`` -- the claude subprocess crashed.
-2. ``is_error: true`` in the parsed JSON -- claude itself signalled an
-   error (auth failure, rate limit, malformed prompt).
+2. ``is_error: true`` on the final ``result`` event -- claude itself signalled
+   an error (auth failure, rate limit, malformed prompt).
 3. The ``[autoclaude:fail] <reason>`` marker in the ``result`` text --
    the agent chose to bail out on a task it could not complete. Agents
    are expected to emit this on its own line when they stop short.
@@ -18,15 +18,16 @@ Failure detection has three layers:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from autoclaude import claude_env
 from autoclaude.claude_env import UserCreationError
@@ -89,23 +90,207 @@ class ClaudeResult:
     token_cost_estimate: int = 0
     duration_ms: int = 0
     token_exhausted: bool = False
-    # One-line takeaway for the Steps table (capped at `_SHORT_SUMMARY_CHARS`).
-    # Derived from the `result` field of the claude JSON, or the bail reason
-    # when the agent raised the fail marker.
     summary: str = ""
-    # Reason string extracted from the `[autoclaude:fail]` marker, when the
-    # agent requested a tick-level failure. Empty otherwise.
     fail_reason: str = ""
+    events: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _tee_stream(stream: IO[str], source: str, *, buffer: list[str], step_id: int | None) -> None:
+def _truncate(text: str, limit: int = _SHORT_SUMMARY_CHARS) -> str:
+    collapsed = " ".join((text or "").split())
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1].rstrip() + "…"
+
+
+def _stringify_content(content: Any) -> str:
+    """Flatten a tool_result content array to a string for log payloads."""
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(item.get("text") or json.dumps(item, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    return json.dumps(content, default=str)
+
+
+def _tool_input_summary(name: str, inp: dict[str, Any]) -> str:  # noqa: PLR0911 (one return per known tool keeps the dispatch flat and obvious)
+    if not isinstance(inp, dict):
+        return ""
+    if name == "Bash":
+        return inp.get("command", "")
+    if name in {"Read", "Edit", "Write", "NotebookEdit"}:
+        return str(inp.get("file_path") or inp.get("notebook_path") or "")
+    if name in {"Glob", "Grep"}:
+        return inp.get("pattern", "")
+    if name == "WebFetch":
+        return inp.get("url", "")
+    if name == "WebSearch":
+        return inp.get("query", "")
+    if name in {"Task", "Agent"}:
+        return inp.get("description") or inp.get("prompt", "")
+    try:
+        return json.dumps(inp, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
+    """Translate one stream-json event into a structured log record."""
+    etype = event.get("type")
+    if etype == "system":
+        subtype = event.get("subtype") or "init"
+        _log.info(
+            "claude %s session=%s model=%s",
+            subtype,
+            event.get("session_id") or "?",
+            event.get("model") or "?",
+            extra={
+                "source": "claude_stdout",
+                "step_id": step_id,
+                "payload": {
+                    "event": "system",
+                    "subtype": subtype,
+                    "session_id": event.get("session_id"),
+                    "model": event.get("model"),
+                    "cwd": event.get("cwd"),
+                },
+            },
+        )
+        return
+    if etype == "assistant":
+        msg = event.get("message") or {}
+        for block in msg.get("content") or []:
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text") or ""
+                _log.info(
+                    "assistant: %s",
+                    text,
+                    extra={
+                        "source": "claude_stdout",
+                        "step_id": step_id,
+                        "payload": {"event": "assistant_text", "text": text},
+                    },
+                )
+            elif btype == "tool_use":
+                name = block.get("name") or "?"
+                summary = _tool_input_summary(name, block.get("input") or {})
+                _log.info(
+                    "tool_use %s%s",
+                    name,
+                    f": {summary}" if summary else "",
+                    extra={
+                        "source": "claude_stdout",
+                        "step_id": step_id,
+                        "payload": {
+                            "event": "tool_use",
+                            "tool": name,
+                            "tool_use_id": block.get("id"),
+                            "input": block.get("input") or {},
+                        },
+                    },
+                )
+        return
+    if etype == "user":
+        msg = event.get("message") or {}
+        for block in msg.get("content") or []:
+            if block.get("type") != "tool_result":
+                continue
+            is_error = bool(block.get("is_error"))
+            content_str = _stringify_content(block.get("content"))
+            label = "tool_result (error)" if is_error else "tool_result"
+            log_fn = _log.error if is_error else _log.info
+            log_fn(
+                "%s: %s",
+                label,
+                content_str,
+                extra={
+                    "source": "claude_stdout",
+                    "step_id": step_id,
+                    "payload": {
+                        "event": "tool_result",
+                        "tool_use_id": block.get("tool_use_id"),
+                        "is_error": is_error,
+                        "content": content_str,
+                    },
+                },
+            )
+        return
+    if etype == "result":
+        _log.info(
+            "claude result is_error=%s cost=%.6f duration=%sms turns=%s",
+            bool(event.get("is_error")),
+            float(event.get("total_cost_usd") or 0.0),
+            event.get("duration_ms"),
+            event.get("num_turns"),
+            extra={
+                "source": "claude_stdout",
+                "step_id": step_id,
+                "payload": {
+                    "event": "result",
+                    "is_error": event.get("is_error"),
+                    "session_id": event.get("session_id"),
+                    "total_cost_usd": event.get("total_cost_usd"),
+                    "duration_ms": event.get("duration_ms"),
+                    "num_turns": event.get("num_turns"),
+                },
+            },
+        )
+        return
+    _log.debug(
+        "claude event %s",
+        etype or "unknown",
+        extra={"source": "claude_stdout", "step_id": step_id, "payload": {"event": etype, "raw": event}},
+    )
+
+
+def _read_stdout(
+    stream: IO[str],
+    *,
+    raw_buffer: list[str],
+    events: list[dict[str, Any]],
+    step_id: int | None,
+) -> None:
+    try:
+        for line in stream:
+            raw_buffer.append(line)
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                event = json.loads(text)
+            except (ValueError, TypeError):
+                _log.info(
+                    text,
+                    extra={"source": "claude_stdout", "step_id": step_id, "payload": {"event": "raw", "raw": text}},
+                )
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+                _log_event(event, step_id=step_id)
+            else:
+                _log.info(
+                    "claude non-dict event",
+                    extra={"source": "claude_stdout", "step_id": step_id, "payload": {"event": "raw", "raw": event}},
+                )
+    finally:
+        stream.close()
+
+
+def _read_stderr(stream: IO[str], *, buffer: list[str], step_id: int | None) -> None:
     try:
         for line in stream:
             buffer.append(line)
             text = line.rstrip("\n")
             if not text:
                 continue
-            _log.info(text, extra={"source": source, "step_id": step_id})
+            _log.info(text, extra={"source": "claude_stderr", "step_id": step_id})
     finally:
         stream.close()
 
@@ -124,7 +309,8 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
         "-p",
         prompt,
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--model",
         _AGENT_MODEL,
     ]
@@ -145,7 +331,23 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
     return argv
 
 
-def run_step(
+def _user_creation_failure(exc: UserCreationError, *, started: float, step_id: int | None) -> ClaudeResult:
+    """Build a failed ``ClaudeResult`` when the privilege-drop precondition fails.
+
+    Extracted from ``run_step`` so the latter stays under the ruff statement
+    threshold and so the recovery path is unit-testable in isolation.
+    """
+    duration_ms = int((time.monotonic() - started) * 1000)
+    message = str(exc)
+    _log.error(
+        "claude subprocess could not start: %s",
+        message,
+        extra={"source": "claude_exit", "step_id": step_id, "payload": {"returncode": -1, "duration_ms": duration_ms}},
+    )
+    return ClaudeResult(ok=False, stdout="", stderr=message, duration_ms=duration_ms, summary=message)
+
+
+def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, parse, return — splitting further hurts readability)
     prompt: str,
     *,
     cwd: Path,
@@ -153,7 +355,7 @@ def run_step(
     step_id: int | None = None,
     env: dict[str, str] | None = None,
 ) -> ClaudeResult:
-    """Run ``claude -p <prompt>`` in ``cwd`` and tee output to the logger.
+    """Run ``claude -p <prompt>`` in ``cwd`` and stream events to the logger.
 
     ``env`` is layered on top of the parent process env so plug-and-play tool
     slash commands (``~/.claude/commands/<tool>.md``) can read tool-specific
@@ -162,26 +364,14 @@ def run_step(
     started = time.monotonic()
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []
+    events: list[dict[str, Any]] = []
     subprocess_env = os.environ.copy()
     if env:
         subprocess_env.update(env)
     try:
         argv = _build_claude_argv(prompt, cwd=cwd)
     except UserCreationError as exc:
-        duration_ms = int((time.monotonic() - started) * 1000)
-        message = str(exc)
-        _log.error(
-            "claude subprocess could not start: %s",
-            message,
-            extra={"source": "claude_exit", "step_id": step_id, "payload": {"returncode": -1, "duration_ms": duration_ms}},
-        )
-        return ClaudeResult(
-            ok=False,
-            stdout="",
-            stderr=message,
-            duration_ms=duration_ms,
-            summary=message,
-        )
+        return _user_creation_failure(exc, started=started, step_id=step_id)
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -191,15 +381,22 @@ def run_step(
         bufsize=1,
         env=subprocess_env,
     )
+    # Snapshot the calling context (e.g. the active profile contextvar) so the
+    # reader threads emit log lines tagged with the same profile as the parent
+    # tick. Without this, threads start with the contextvar default and every
+    # claude subprocess line shows up as ``[-]``. A ``Context`` cannot be
+    # entered from two threads at once, so each reader gets its own copy.
+    stdout_ctx = contextvars.copy_context()
+    stderr_ctx = contextvars.copy_context()
     stdout_thread = threading.Thread(
-        target=_tee_stream,
-        args=(proc.stdout, "claude_stdout"),
-        kwargs={"buffer": stdout_buffer, "step_id": step_id},
+        target=stdout_ctx.run,
+        args=(_read_stdout, proc.stdout),
+        kwargs={"raw_buffer": stdout_buffer, "events": events, "step_id": step_id},
         daemon=True,
     )
     stderr_thread = threading.Thread(
-        target=_tee_stream,
-        args=(proc.stderr, "claude_stderr"),
+        target=stderr_ctx.run,
+        args=(_read_stderr, proc.stderr),
         kwargs={"buffer": stderr_buffer, "step_id": step_id},
         daemon=True,
     )
@@ -229,17 +426,31 @@ def run_step(
             stdout=stdout_text,
             stderr=stderr_text,
             duration_ms=duration_ms,
+            events=events,
         )
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
     duration_ms = int((time.monotonic() - started) * 1000)
     stdout_text = "".join(stdout_buffer)
     stderr_text = "".join(stderr_buffer)
-    session_id, cost, tokens, parsed = _parse_result_metadata(stdout_text)
-    token_exhausted = detect_token_exhaustion(stdout_text, stderr_text, parsed)
-    result_text = _extract_result_text(parsed)
+    result_event = _find_result_event(events)
+    init_event = _find_init_event(events)
+    session_id = ""
+    cost = 0.0
+    tokens = 0
+    if isinstance(result_event, dict):
+        session_id = str(result_event.get("session_id") or "")
+        try:
+            cost = float(result_event.get("total_cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            cost = 0.0
+        tokens = _extract_token_total(result_event)
+    if not session_id and isinstance(init_event, dict):
+        session_id = str(init_event.get("session_id") or "")
+    token_exhausted = detect_token_exhaustion(stdout_text, stderr_text, result_event)
+    result_text = _extract_result_text(result_event) or _collect_assistant_text(events)
     fail_reason = _extract_fail_marker(result_text)
-    is_error_flag = bool(parsed.get("is_error")) if isinstance(parsed, dict) else False
+    is_error_flag = bool(result_event.get("is_error")) if isinstance(result_event, dict) else False
     summary = _build_short_summary(result_text, fail_reason=fail_reason, stderr=stderr_text, returncode=returncode)
     ok = returncode == 0 and not is_error_flag and not fail_reason
     _log.info(
@@ -273,6 +484,7 @@ def run_step(
         token_exhausted=token_exhausted,
         summary=summary,
         fail_reason=fail_reason,
+        events=events,
     )
 
 
@@ -285,12 +497,7 @@ _USAGE_TOKEN_KEYS = (
 
 
 def _extract_token_total(parsed: dict) -> int:
-    """Sum every known token category from a `claude -p` JSON payload.
-
-    The CLI's JSON has emitted the usage block in several shapes across versions:
-    top-level keys, a nested `usage` dict, or a `message.usage` dict. Probe all
-    three defensively and return 0 when nothing is found.
-    """
+    """Sum every known token category from a `claude` JSON payload."""
     candidates: list[dict] = []
     for key in ("usage", "token_usage"):
         nested = parsed.get(key)
@@ -314,26 +521,21 @@ def _extract_token_total(parsed: dict) -> int:
     return total
 
 
-def _parse_result_metadata(stdout_text: str) -> tuple[str, float, int, dict | None]:
-    if not stdout_text:
-        return "", 0.0, 0, None
-    try:
-        parsed = json.loads(stdout_text)
-    except (ValueError, TypeError):
-        return "", 0.0, 0, None
-    if not isinstance(parsed, dict):
-        return "", 0.0, 0, None
-    session_id = str(parsed.get("session_id") or parsed.get("sessionId") or "")
-    try:
-        cost = float(parsed.get("total_cost_usd") or parsed.get("totalCostUsd") or 0.0)
-    except (TypeError, ValueError):
-        cost = 0.0
-    tokens = _extract_token_total(parsed)
-    return session_id, cost, tokens, parsed
+def _find_result_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if isinstance(event, dict) and event.get("type") == "result":
+            return event
+    return None
+
+
+def _find_init_event(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in events:
+        if isinstance(event, dict) and event.get("type") == "system":
+            return event
+    return None
 
 
 def _extract_result_text(parsed: dict | None) -> str:
-    """Pull the human-readable assistant message from a parsed claude JSON."""
     if not isinstance(parsed, dict):
         return ""
     raw = parsed.get("result")
@@ -342,12 +544,24 @@ def _extract_result_text(parsed: dict | None) -> str:
     return ""
 
 
-def _extract_fail_marker(result_text: str) -> str:
-    """Return the reason string when the agent emitted ``[autoclaude:fail] ...``.
+def _collect_assistant_text(events: list[dict[str, Any]]) -> str:
+    """Fallback: concatenate the last assistant message's text blocks."""
+    for event in reversed(events):
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        msg = event.get("message") or {}
+        parts = [
+            block.get("text") or ""
+            for block in (msg.get("content") or [])
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        joined = "\n".join(p for p in parts if p)
+        if joined:
+            return joined.strip()
+    return ""
 
-    Empty string when the marker is absent. The marker must appear on its own
-    line to avoid false positives from prose that mentions the word ``fail``.
-    """
+
+def _extract_fail_marker(result_text: str) -> str:
     if not result_text:
         return ""
     match = _BAIL_MARKER_RE.search(result_text)
@@ -363,13 +577,6 @@ def _build_short_summary(
     stderr: str,
     returncode: int,
 ) -> str:
-    """Compose a one-line summary shown in the Steps table.
-
-    Preference order: explicit bail reason, first non-empty paragraph of
-    claude's ``result`` text, first line of stderr, then a generic
-    ``rc=<n>`` fallback. Never returns raw JSON from stdout -- that used to
-    leak into the dashboard when the result text was missing.
-    """
     if fail_reason:
         return _truncate(fail_reason)
     candidate = _first_paragraph(result_text)
@@ -379,13 +586,6 @@ def _build_short_summary(
     if stderr_line:
         return _truncate(stderr_line)
     return f"claude exited rc={returncode}"
-
-
-def _truncate(text: str) -> str:
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= _SHORT_SUMMARY_CHARS:
-        return collapsed
-    return collapsed[: _SHORT_SUMMARY_CHARS - 1].rstrip() + "…"
 
 
 def _first_paragraph(text: str) -> str:
