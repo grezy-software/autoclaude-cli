@@ -1,3 +1,10 @@
+## [2.5.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.0...v2.5.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **test:** Add debug to logger file and fix logs for test ([7808d97](https://github.com/grezy-software/autoclaude-cli/commit/7808d97fc9858f68029973bc2db21891fb53a4be))
+
 # [2.5.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.4.7...v2.5.0) (2026-04-30)
 
 
