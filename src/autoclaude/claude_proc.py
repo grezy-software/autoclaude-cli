@@ -22,6 +22,7 @@ import contextvars
 import json
 import os
 import re
+import shlex
 import subprocess
 import threading
 import time
@@ -295,6 +296,27 @@ def _read_stderr(stream: IO[str], *, buffer: list[str], step_id: int | None) -> 
         stream.close()
 
 
+def _format_argv_for_log(argv: list[str]) -> str:
+    """Render ``argv`` as a paste-ready shell line, with the ``-p`` prompt body elided.
+
+    The prompt is large (full agent context) and would flood the log; replacing
+    it with a length placeholder keeps the wrapper command (``runuser`` / ``sudo``
+    / ``--permission-mode`` / ``--model``) visible so an operator can replay it
+    by hand to diagnose ``Permission denied`` and similar wrapper failures.
+    """
+    pieces: list[str] = []
+    elide_next = False
+    for arg in argv:
+        if elide_next:
+            pieces.append(shlex.quote(f"<prompt: {len(arg)} chars elided>"))
+            elide_next = False
+            continue
+        pieces.append(shlex.quote(arg))
+        if arg == "-p":
+            elide_next = True
+    return " ".join(pieces)
+
+
 def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
     """Compose the ``claude`` argv adapted to host environment.
 
@@ -382,6 +404,12 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
         argv = _build_claude_argv(prompt, cwd=cwd)
     except UserCreationError as exc:
         return _user_creation_failure(exc, started=started, step_id=step_id)
+    formatted_argv = _format_argv_for_log(argv)
+    _log.debug(
+        "claude exec: %s",
+        formatted_argv,
+        extra={"source": "claude_exec", "step_id": step_id, "payload": {"argv": argv}},
+    )
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -423,12 +451,13 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
         stderr_text = "".join(stderr_buffer) + "\n[autoclaude] subprocess timed out"
         duration_ms = int((time.monotonic() - started) * 1000)
         _log.error(
-            "claude subprocess timed out after %ss",
+            "claude subprocess timed out after %ss; command was: %s",
             timeout,
+            formatted_argv,
             extra={
                 "source": "claude_exit",
                 "step_id": step_id,
-                "payload": {"returncode": -1, "duration_ms": duration_ms, "timed_out": True},
+                "payload": {"returncode": -1, "duration_ms": duration_ms, "timed_out": True, "argv": argv},
             },
         )
         return ClaudeResult(
@@ -483,6 +512,16 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
             },
         },
     )
+    # On any non-zero exit (including the runuser/sudo permission-denied family),
+    # echo the exact wrapped command so the operator can copy-paste it and
+    # replay the failure manually as root.
+    if returncode != 0:
+        _log.error(
+            "claude exec failed rc=%s; command was: %s",
+            returncode,
+            formatted_argv,
+            extra={"source": "claude_exec", "step_id": step_id, "payload": {"argv": argv, "returncode": returncode}},
+        )
     return ClaudeResult(
         ok=ok,
         stdout=stdout_text,

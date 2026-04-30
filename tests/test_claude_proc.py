@@ -17,6 +17,7 @@ from autoclaude.claude_proc import (
     _build_short_summary,
     _extract_fail_marker,
     _extract_token_total,
+    _format_argv_for_log,
     run_step,
 )
 
@@ -157,6 +158,72 @@ def _write_fake_claude_emitting(payload: dict, tmp_path, monkeypatch) -> None:
     )
     fake_script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_claude_dir}:/usr/bin:/bin")
+
+
+def test_format_argv_elides_prompt_and_keeps_wrapper_visible() -> None:
+    argv = [
+        "runuser",
+        "-u",
+        "autoclaude",
+        "--preserve-environment",
+        "--",
+        "claude",
+        "-p",
+        "this is a very long prompt body that we do not want flooding the log",
+        "--output-format",
+        "stream-json",
+        "--model",
+        "opus",
+    ]
+    rendered = _format_argv_for_log(argv)
+    # Wrapper details must remain visible so the operator can paste the line.
+    assert "runuser -u autoclaude --preserve-environment -- claude" in rendered
+    assert "--output-format stream-json" in rendered
+    assert "--model opus" in rendered
+    # The actual prompt body must NOT appear; an elision marker takes its place.
+    assert "long prompt body" not in rendered
+    assert "chars elided" in rendered
+
+
+def test_format_argv_quotes_args_with_spaces() -> None:
+    rendered = _format_argv_for_log(["claude", "--cwd", "/path with spaces"])
+    assert "'/path with spaces'" in rendered
+
+
+def test_run_step_logs_command_when_subprocess_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When claude exits non-zero, the redacted argv must be logged at ERROR for diagnosis."""
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    fake = fake_dir / "claude"
+    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(1)\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_dir}:/usr/bin:/bin")
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    claude_logger = logging.getLogger("autoclaude.claude")
+    capture = _Capture(level=logging.DEBUG)
+    claude_logger.addHandler(capture)
+    try:
+        result = run_step("anything", cwd=cwd, step_id=99)
+    finally:
+        claude_logger.removeHandler(capture)
+
+    assert not result.ok
+    exec_errors = [
+        r for r in records
+        if getattr(r, "source", None) == "claude_exec" and r.levelno >= logging.ERROR
+    ]
+    assert exec_errors, "expected an ERROR log line containing the failed command"
+    message = exec_errors[0].getMessage()
+    assert "claude" in message
+    assert "rc=1" in message
 
 
 def test_run_step_flags_is_error(tmp_path, monkeypatch) -> None:
