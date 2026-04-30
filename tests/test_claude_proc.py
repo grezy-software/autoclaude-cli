@@ -366,3 +366,129 @@ def test_run_step_flags_bail_marker(tmp_path, monkeypatch) -> None:
     assert not result.ok
     assert result.fail_reason == "No GitHub remote configured"
     assert result.summary == "No GitHub remote configured"
+
+
+def _write_fake_claude_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+    """Drop a fake `claude` on PATH whose Python body is ``body``.
+
+    ``body`` runs in a fresh process, with ``sys`` and ``time`` pre-imported.
+    Used by the watchdog tests to script post-result hangs and idle hangs.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    fake_dir = tmp_path / "bin"
+    fake_dir.mkdir()
+    fake = fake_dir / "claude"
+    fake.write_text(
+        f"#!{sys.executable}\nimport sys, time, json\n{body}\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_dir}:/usr/bin:/bin")
+
+
+def test_run_step_kills_after_post_result_grace_when_subprocess_hangs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduce the Bun event-loop hang and verify the post-result watchdog.
+
+    Claude flushes the result then parks forever. The watchdog must terminate
+    it within the grace window and still report ``ok=True`` because the work
+    itself completed.
+    """
+    _write_fake_claude_script(
+        tmp_path,
+        monkeypatch,
+        body=(
+            "sys.stdout.write(json.dumps({"
+            "'type':'result','is_error':False,"
+            "'session_id':'sess-1','total_cost_usd':0.10,'result':'done'"
+            "}) + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(120)\n"  # would hang for 2 min if not killed
+        ),
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    result = run_step(
+        "anything",
+        cwd=cwd,
+        step_id=1,
+        post_result_grace=0.3,
+        timeout=30,
+    )
+
+    assert result.duration_ms < 5_000, (
+        f"watchdog should have killed the hung subprocess; "
+        f"actual duration_ms={result.duration_ms}"
+    )
+    assert result.ok is True, "post-result kill is internal cleanup, not a failure"
+    assert result.session_id == "sess-1"
+    assert any(e.get("type") == "result" for e in result.events)
+
+
+def test_run_step_kills_after_idle_timeout_when_no_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the idle-stdout watchdog kills hangs that occur before any output.
+
+    ``ok`` is False because the work never completed.
+    """
+    _write_fake_claude_script(
+        tmp_path,
+        monkeypatch,
+        body="time.sleep(120)\n",
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    result = run_step(
+        "anything",
+        cwd=cwd,
+        step_id=1,
+        idle_timeout=0.5,
+        timeout=30,
+    )
+
+    assert result.duration_ms < 5_000
+    assert result.ok is False
+    assert "stdout idle" in result.stderr
+
+
+def test_run_step_natural_exit_unaffected_by_watchdog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the watchdog is silent when the subprocess exits naturally.
+
+    Historical ok/rc semantics must be preserved when no kill_reason fires.
+    """
+    _write_fake_claude_emitting(
+        {
+            "type": "result",
+            "is_error": False,
+            "session_id": "sess-9",
+            "total_cost_usd": 0.05,
+            "result": "ok",
+        },
+        tmp_path,
+        monkeypatch,
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    result = run_step(
+        "anything",
+        cwd=cwd,
+        step_id=1,
+        post_result_grace=0.5,
+        idle_timeout=0.5,
+        timeout=30,
+    )
+
+    assert result.ok is True
+    assert result.session_id == "sess-9"
+    assert "stdout idle" not in result.stderr
+    assert "timed out" not in result.stderr

@@ -45,6 +45,29 @@ _AGENT_MODEL = "opus"
 # the Steps table shows a single-line takeaway rather than a wall of text.
 _SHORT_SUMMARY_CHARS = 240
 
+# Watchdog: once we observe a ``{"type":"result"}`` event on stdout, claude is
+# expected to flush and exit. Bun-based builds occasionally retain active
+# handles past the result (periodic timers, MCP keepalives) and park in
+# ``do_epoll_wait`` indefinitely. After this many seconds we force-terminate
+# rather than wait the full ``timeout`` budget. The output captured up to the
+# kill is preserved; ``ok`` is computed from the result event, not the rc.
+_DEFAULT_POST_RESULT_GRACE_SECS = 30.0
+
+# Watchdog: kill if no output has been seen on either stream for this long.
+# Defense-in-depth for hangs that occur BEFORE the result event. Default off
+# (``None``) because legitimate long tool calls can be silent for several
+# minutes; opt-in per call site once a safe value is established.
+_DEFAULT_IDLE_TIMEOUT_SECS: float | None = None
+
+# Polling interval of the watchdog loop. The trade-off is between extra wakeups
+# and the granularity at which kill_reason is detected. 0.5s is well below the
+# scale of tick durations (30s..30min) and not a measurable cost.
+_WATCHDOG_POLL_SECS = 0.5
+
+# After SIGTERM, the time we wait before escalating to SIGKILL. ``runuser``
+# forwards SIGTERM to its claude child, so this also covers the wrapper case.
+_TERM_GRACE_SECS = 5.0
+
 # Convention for agents that hit an unrecoverable precondition (missing remote,
 # auth failure detected mid-run, etc.). When the agent ends its response with
 # this marker on its own line, the runner treats the step as failed even though
@@ -257,10 +280,14 @@ def _read_stdout(
     raw_buffer: list[str],
     events: list[dict[str, Any]],
     step_id: int | None,
+    result_seen: threading.Event | None = None,
+    idle_pulse: threading.Event | None = None,
 ) -> None:
     try:
         for line in stream:
             raw_buffer.append(line)
+            if idle_pulse is not None:
+                idle_pulse.set()
             text = line.strip()
             if not text:
                 continue
@@ -275,6 +302,8 @@ def _read_stdout(
             if isinstance(event, dict):
                 events.append(event)
                 _log_event(event, step_id=step_id)
+                if result_seen is not None and event.get("type") == "result":
+                    result_seen.set()
             else:
                 _log.info(
                     "claude non-dict event",
@@ -284,16 +313,100 @@ def _read_stdout(
         stream.close()
 
 
-def _read_stderr(stream: IO[str], *, buffer: list[str], step_id: int | None) -> None:
+def _read_stderr(
+    stream: IO[str],
+    *,
+    buffer: list[str],
+    step_id: int | None,
+    idle_pulse: threading.Event | None = None,
+) -> None:
     try:
         for line in stream:
             buffer.append(line)
+            if idle_pulse is not None:
+                idle_pulse.set()
             text = line.rstrip("\n")
             if not text:
                 continue
             _log.info(text, extra={"source": "claude_stderr", "step_id": step_id})
     finally:
         stream.close()
+
+
+def _force_kill(proc: subprocess.Popen, reason: str, *, step_id: int | None) -> int:
+    """SIGTERM, then SIGKILL after a short grace; return the resulting rc.
+
+    Output already buffered by the reader threads is preserved by the caller;
+    we only collapse the subprocess. ``runuser`` forwards SIGTERM, so the
+    privilege-drop wrapper does not block the signal path.
+    """
+    _log.warning(
+        "claude subprocess force-terminated (%s); buffered output is preserved",
+        reason,
+        extra={"source": "claude_exit", "step_id": step_id, "payload": {"reason": reason}},
+    )
+    proc.terminate()
+    try:
+        return proc.wait(timeout=_TERM_GRACE_SECS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.wait()
+
+
+def _wait_with_watchdog(
+    proc: subprocess.Popen,
+    *,
+    overall_timeout: int,
+    post_result_grace: float,
+    idle_timeout: float | None,
+    result_seen: threading.Event,
+    idle_pulse: threading.Event,
+    step_id: int | None,
+) -> tuple[int, str | None]:
+    """Wait for ``proc`` to exit, enforcing three independent watchdogs.
+
+    1. ``overall_timeout`` -- hard cap matching the existing ``timeout`` budget.
+    2. ``post_result_grace`` -- once a ``{"type":"result"}`` event has been
+       observed, allow that long for the subprocess to exit on its own. Past
+       that, force-terminate. Targets the Bun event-loop hang where claude has
+       finished its work but a leaked active handle prevents process exit.
+    3. ``idle_timeout`` -- kill if no output has been seen on either stream for
+       that long. Defense in depth for hangs occurring BEFORE the result event.
+       Disabled when ``None``.
+
+    Returns ``(returncode, kill_reason)``. ``kill_reason`` is ``None`` for a
+    natural exit, otherwise one of: ``post_result_grace``, ``idle_stdout``,
+    ``overall_timeout``.
+    """
+    deadline = time.monotonic() + overall_timeout
+    grace_deadline: float | None = None
+    last_pulse_at = time.monotonic()
+    while True:
+        rc = proc.poll()
+        if rc is not None:
+            return rc, None
+        now = time.monotonic()
+        if now >= deadline:
+            rc = _force_kill(proc, "overall_timeout", step_id=step_id)
+            return rc, "overall_timeout"
+        if result_seen.is_set():
+            if grace_deadline is None:
+                grace_deadline = now + post_result_grace
+                _log.debug(
+                    "claude result event seen; allowing %.1fs to exit before forcing termination",
+                    post_result_grace,
+                    extra={"source": "claude_exit", "step_id": step_id},
+                )
+            elif now >= grace_deadline:
+                rc = _force_kill(proc, "post_result_grace", step_id=step_id)
+                return rc, "post_result_grace"
+        if idle_pulse.is_set():
+            idle_pulse.clear()
+            last_pulse_at = now
+        elif idle_timeout is not None and (now - last_pulse_at) > idle_timeout:
+            rc = _force_kill(proc, "idle_stdout", step_id=step_id)
+            return rc, "idle_stdout"
+        time.sleep(min(_WATCHDOG_POLL_SECS, max(0.0, deadline - now)))
 
 
 def _format_argv_for_log(argv: list[str]) -> str:
@@ -384,6 +497,8 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
     *,
     cwd: Path,
     timeout: int = 3600,
+    post_result_grace: float = _DEFAULT_POST_RESULT_GRACE_SECS,
+    idle_timeout: float | None = _DEFAULT_IDLE_TIMEOUT_SECS,
     step_id: int | None = None,
     env: dict[str, str] | None = None,
 ) -> ClaudeResult:
@@ -392,11 +507,17 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
     ``env`` is layered on top of the parent process env so plug-and-play tool
     slash commands (``~/.claude/commands/<tool>.md``) can read tool-specific
     config (server URL, API key, agent_config_id) without per-tool wiring.
+
+    ``post_result_grace`` and ``idle_timeout`` drive the parent-side watchdog
+    that protects the tick from a Bun-side hang where claude has finished its
+    work but never exits (see ``_wait_with_watchdog``).
     """
     started = time.monotonic()
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []
     events: list[dict[str, Any]] = []
+    result_seen = threading.Event()
+    idle_pulse = threading.Event()
     subprocess_env = os.environ.copy()
     if env:
         subprocess_env.update(env)
@@ -429,49 +550,41 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
     stdout_thread = threading.Thread(
         target=stdout_ctx.run,
         args=(_read_stdout, proc.stdout),
-        kwargs={"raw_buffer": stdout_buffer, "events": events, "step_id": step_id},
+        kwargs={
+            "raw_buffer": stdout_buffer,
+            "events": events,
+            "step_id": step_id,
+            "result_seen": result_seen,
+            "idle_pulse": idle_pulse,
+        },
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=stderr_ctx.run,
         args=(_read_stderr, proc.stderr),
-        kwargs={"buffer": stderr_buffer, "step_id": step_id},
+        kwargs={"buffer": stderr_buffer, "step_id": step_id, "idle_pulse": idle_pulse},
         daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
-    try:
-        returncode = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
-        stdout_text = "".join(stdout_buffer)
-        stderr_text = "".join(stderr_buffer) + "\n[autoclaude] subprocess timed out"
-        duration_ms = int((time.monotonic() - started) * 1000)
-        _log.error(
-            "claude subprocess timed out after %ss; command was: %s",
-            timeout,
-            formatted_argv,
-            extra={
-                "source": "claude_exit",
-                "step_id": step_id,
-                "payload": {"returncode": -1, "duration_ms": duration_ms, "timed_out": True, "argv": argv},
-            },
-        )
-        return ClaudeResult(
-            ok=False,
-            stdout=stdout_text,
-            stderr=stderr_text,
-            duration_ms=duration_ms,
-            events=events,
-        )
+    returncode, kill_reason = _wait_with_watchdog(
+        proc,
+        overall_timeout=timeout,
+        post_result_grace=post_result_grace,
+        idle_timeout=idle_timeout,
+        result_seen=result_seen,
+        idle_pulse=idle_pulse,
+        step_id=step_id,
+    )
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
     duration_ms = int((time.monotonic() - started) * 1000)
     stdout_text = "".join(stdout_buffer)
     stderr_text = "".join(stderr_buffer)
+    if kill_reason == "overall_timeout":
+        stderr_text += "\n[autoclaude] subprocess timed out"
+    elif kill_reason == "idle_stdout":
+        stderr_text += "\n[autoclaude] subprocess killed: stdout idle"
     result_event = _find_result_event(events)
     init_event = _find_init_event(events)
     session_id = ""
@@ -491,13 +604,24 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
     fail_reason = _extract_fail_marker(result_text)
     is_error_flag = bool(result_event.get("is_error")) if isinstance(result_event, dict) else False
     summary = _build_short_summary(result_text, fail_reason=fail_reason, stderr=stderr_text, returncode=returncode)
-    ok = returncode == 0 and not is_error_flag and not fail_reason
+    # ok semantics under the watchdog:
+    # - post_result_grace: the work completed (we observed the result event);
+    #   the kill is internal cleanup, so trust the result event flags.
+    # - overall_timeout / idle_stdout: the work did not complete cleanly.
+    # - natural exit: the historical rule (rc + result + bail marker) applies.
+    if kill_reason == "post_result_grace":
+        ok = not is_error_flag and not fail_reason
+    elif kill_reason in ("overall_timeout", "idle_stdout"):
+        ok = False
+    else:
+        ok = returncode == 0 and not is_error_flag and not fail_reason
     _log.info(
-        "claude subprocess exited rc=%s in %sms cost=%.6f tokens=%s",
+        "claude subprocess exited rc=%s in %sms cost=%.6f tokens=%s%s",
         returncode,
         duration_ms,
         cost,
         tokens,
+        f" (force-terminated: {kill_reason})" if kill_reason else "",
         extra={
             "source": "claude_exit",
             "step_id": step_id,
@@ -509,13 +633,15 @@ def run_step(  # noqa: PLR0915 (subprocess lifecycle: setup, threads, wait, pars
                 "session_id": session_id,
                 "is_error": is_error_flag,
                 "fail_reason": fail_reason,
+                "kill_reason": kill_reason,
             },
         },
     )
     # On any non-zero exit (including the runuser/sudo permission-denied family),
     # echo the exact wrapped command so the operator can copy-paste it and
-    # replay the failure manually as root.
-    if returncode != 0:
+    # replay the failure manually as root. The post-result kill is excluded
+    # because the user-facing tick succeeded -- the rc only reflects SIGTERM.
+    if returncode != 0 and kill_reason != "post_result_grace":
         _log.error(
             "claude exec failed rc=%s; command was: %s",
             returncode,
