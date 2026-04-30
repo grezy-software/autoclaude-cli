@@ -1,3 +1,10 @@
+## [2.5.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.4...v2.5.5) (2026-04-30)
+
+
+### Bug Fixes
+
+* **logs:** minor improvments on logs ([3ddf02a](https://github.com/grezy-software/autoclaude-cli/commit/3ddf02af6c4ba766ead306ede930382867c354a7))
+
 ## [2.5.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.3...v2.5.4) (2026-04-30)
 
 
