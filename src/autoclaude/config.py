@@ -78,6 +78,7 @@ class Profile:
     api_key: str = ""
     repo_checkout: str = ""
     autoclaude_root: str = ""
+    paused: bool = False
 
     def resolve_autoclaude_root(self: Profile) -> Path:
         """Where the CLI stores cached docs, reports, and attempt state.
@@ -116,6 +117,7 @@ class Config:
                 api_key=raw.get("api_key", ""),
                 repo_checkout=raw.get("repo_checkout", ""),
                 autoclaude_root=raw.get("autoclaude_root", ""),
+                paused=bool(raw.get("paused", False)),
             )
         return cls(active=active, profiles=profiles)
 

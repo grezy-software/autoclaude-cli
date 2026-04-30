@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json as _json
+import os
 import shutil
 import subprocess
 import webbrowser
@@ -643,8 +644,25 @@ def uninstall_services() -> None:
 
 
 @app.command()
-def pause() -> None:
-    """Stop the scheduler (heartbeat keeps running)."""
+def pause(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Stop the scheduler (heartbeat keeps running).
+
+    With ``--profile X`` (or ``AUTOCLAUDE_PROFILE``) only that profile is
+    paused: the scheduler service keeps running but skips ticks for the
+    paused profile until ``autoclaude --profile X play`` clears the flag.
+    Without a profile flag the launchd/systemd scheduler service is
+    stopped entirely (legacy behavior).
+    """
+    explicit = profile or (ctx.obj or {}).get("profile") or os.environ.get("AUTOCLAUDE_PROFILE")
+    if explicit:
+        _set_profile_paused(explicit, paused=True)
+        _log.info(
+            "[yellow]profile %r paused[/yellow]; scheduler will skip its ticks. Resume with `autoclaude --profile %s play`.",
+            explicit,
+            explicit,
+            extra={"source": "cli"},
+        )
+        return
     try:
         result = pause_scheduler()
     except ServiceInstallError as exc:
@@ -658,14 +676,34 @@ def pause() -> None:
 
 
 @app.command()
-def play() -> None:
-    """Resume the scheduler."""
+def play(ctx: typer.Context, profile: ProfileOption = None) -> None:
+    """Resume the scheduler.
+
+    With ``--profile X`` only that profile's pause flag is cleared; the
+    scheduler service is left untouched. Without a profile flag the
+    scheduler service is started (legacy behavior).
+    """
+    explicit = profile or (ctx.obj or {}).get("profile") or os.environ.get("AUTOCLAUDE_PROFILE")
+    if explicit:
+        _set_profile_paused(explicit, paused=False)
+        _log.info("[green]profile %r resumed[/green]", explicit, extra={"source": "cli"})
+        return
     try:
         result = play_scheduler()
     except ServiceInstallError as exc:
         _log.error("[red]play failed[/red]: %s", exc, extra={"source": "cli"})
         raise typer.Exit(code=1) from exc
     _log.info("[green]scheduler running[/green] (%s)", result.detail, extra={"source": "cli"})
+
+
+def _set_profile_paused(name: str, *, paused: bool) -> None:
+    cfg = Config.load()
+    profile_obj = cfg.profiles.get(name)
+    if profile_obj is None:
+        _log.error("[red]profile %r not found[/red]; configured: %s", name, sorted(cfg.profiles), extra={"source": "cli"})
+        raise typer.Exit(code=1)
+    profile_obj.paused = paused
+    cfg.save()
 
 
 task_app = typer.Typer(
