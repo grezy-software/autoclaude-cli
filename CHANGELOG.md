@@ -1,3 +1,10 @@
+## [2.5.11](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.10...v2.5.11) (2026-04-30)
+
+
+### Bug Fixes
+
+* **proc:** Improve hang detection with 5 minutes timout ([649d943](https://github.com/grezy-software/autoclaude-cli/commit/649d943c2ef133935e6baacd4076df7ad8eab50c))
+
 ## [2.5.10](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.9...v2.5.10) (2026-04-30)
 
 
