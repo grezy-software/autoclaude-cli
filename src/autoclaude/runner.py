@@ -761,7 +761,7 @@ def _cleanup_worktree(workspace: Workspace, worktree: Worktree) -> None:
         _log.warning("worktree cleanup failed: %s", exc, extra={"source": "cli"})
 
 
-def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace] | None = None) -> int:
+def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace] | None = None) -> int:  # noqa: PLR0911
     """Fire one tick against the project's GitHub repo using an isolated worktree.
 
     The workspace is built from ``project.github_repo`` returned by the

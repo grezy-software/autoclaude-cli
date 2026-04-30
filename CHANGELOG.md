@@ -1,3 +1,10 @@
+## [2.5.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.3...v2.5.4) (2026-04-30)
+
+
+### Bug Fixes
+
+* **runner:** silence PLR0911 on run_tick ([89236c1](https://github.com/grezy-software/autoclaude-cli/commit/89236c18c95c3ebe51f7546a504ec4c796681a8a))
+
 ## [2.5.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.2...v2.5.3) (2026-04-30)
 
 
