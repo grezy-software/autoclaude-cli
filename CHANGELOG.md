@@ -1,3 +1,10 @@
+## [2.5.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.1...v2.5.2) (2026-04-30)
+
+
+### Bug Fixes
+
+* **status:** Add next tick information in `autoclaude status` command ([e92f069](https://github.com/grezy-software/autoclaude-cli/commit/e92f069d7e6f01867f3b1a5e0023ad34042771a4))
+
 ## [2.5.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.0...v2.5.1) (2026-04-30)
 
 
