@@ -325,6 +325,56 @@ def _report_protocol_state(client: ApiClient) -> None:
             _log.info("  %s -> %s", key, stage, extra={"source": "cli"})
 
 
+def _service_state(kind: str) -> str:
+    """Return the platform-reported status string for ``kind`` (``active``, ``inactive``, ...)."""
+    try:
+        return (status_service(kind).detail or "unknown").strip()
+    except ServiceInstallError as exc:
+        return f"error: {exc}"
+
+
+def _resolve_autoclaude_status(prof: Profile) -> tuple[str, str]:
+    """Summarise local autoclaude state for ``prof``.
+
+    Returns ``(level, label)`` where ``level`` is one of:
+
+    - ``"running"``: profile is not paused AND scheduler+heartbeat are active.
+    - ``"paused"``: ticks won't fire (profile flag set, or scheduler stopped).
+    - ``"degraded"``: scheduler is fine but heartbeat is down -- ticks still
+      run, but the dashboard's "Active CLIs" KPI will go stale.
+
+    The label is a short, human-readable string suitable for a single status
+    line. Built from the profile's ``paused`` config flag plus the OS service
+    states resolved via ``status_service``.
+    """
+    flags: list[str] = []
+    paused = False
+    degraded = False
+
+    if prof.paused:
+        flags.append("profile paused")
+        paused = True
+
+    scheduler_state = _service_state("scheduler")
+    if scheduler_state != "active":
+        flags.append(f"scheduler {scheduler_state}")
+        paused = True
+
+    heartbeat_state = _service_state("heartbeat")
+    if heartbeat_state != "active":
+        flags.append(f"heartbeat {heartbeat_state}")
+        if not paused:
+            degraded = True
+
+    if not flags:
+        return "running", "running (scheduler + heartbeat active)"
+    if paused:
+        return "paused", "paused: " + ", ".join(flags)
+    if degraded:
+        return "degraded", "degraded: " + ", ".join(flags)
+    return "running", "running"
+
+
 @app.command()
 def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
     """Print the next-job summary for every configured profile.
@@ -332,12 +382,20 @@ def status(ctx: typer.Context, profile: ProfileOption = None) -> None:
     Iterates profiles in sorted name order so a single ``autoclaude
     status`` covers local + production. Pass ``--profile X`` to restrict
     to one profile.
+
+    For each profile, prints the local autoclaude state (``running`` /
+    ``paused`` / ``degraded``) on top of the next-job summary so an operator
+    can tell at a glance whether ticks will actually fire.
     """
     selected = _select_profiles(ctx, profile)
     failures = 0
     for prof in selected:
         with profile_context(prof.name):
             _log.info("url: %s", prof.url, extra={"source": "cli"})
+            level, label = _resolve_autoclaude_status(prof)
+            color = {"running": "green", "paused": "yellow", "degraded": "yellow"}.get(level, "yellow")
+            log_fn = _log.info if level == "running" else _log.warning
+            log_fn("autoclaude: [%s]%s[/%s]", color, label, color, extra={"source": "cli"})
             try:
                 with ApiClient(prof, cli_version=__version__) as client:
                     api_ctx = client.context()
