@@ -5,16 +5,27 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
+from autoclaude import claude_env, claude_proc
+from autoclaude.claude_env import UserCreationError
 from autoclaude.claude_proc import (
     _SHORT_SUMMARY_CHARS,
+    _build_claude_argv,
     _build_short_summary,
     _extract_fail_marker,
     _extract_token_total,
     run_step,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_claude_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default to a non-root, no-settings environment so existing tests stay deterministic."""
+    claude_env.reset_caches()
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
 
 
 def test_extract_token_total_sums_nested_usage_tokens() -> None:
@@ -166,6 +177,76 @@ def test_run_step_flags_is_error(tmp_path, monkeypatch) -> None:
     result = run_step("anything", cwd=cwd, step_id=1)
     assert not result.ok
     assert result.summary == "Something broke mid-run."
+
+
+def test_build_argv_includes_bypass_when_no_default_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
+    argv = _build_claude_argv("hi", cwd=tmp_path)
+    assert "--permission-mode" in argv
+    idx = argv.index("--permission-mode")
+    assert argv[idx + 1] == "bypassPermissions"
+    assert argv[0] == "claude"
+
+
+def test_build_argv_omits_bypass_when_auto_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+    argv = _build_claude_argv("hi", cwd=tmp_path)
+    assert "--permission-mode" not in argv
+    assert argv[0] == "claude"
+
+
+def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
+    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_claude_config", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_repo", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+
+    argv = _build_claude_argv("hi", cwd=tmp_path)
+    assert argv[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
+    assert "claude" in argv
+    assert "--permission-mode" in argv
+
+
+def test_build_argv_does_not_wrap_when_root_in_auto_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Root + defaultMode=auto: claude is fine without bypassPermissions, so do not provision the autoclaude user."""
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise AssertionError("ensure_autoclaude_user must not be called in auto mode")
+
+    monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _boom)
+    monkeypatch.setattr(claude_env, "share_claude_config", _boom)
+    monkeypatch.setattr(claude_env, "share_repo", _boom)
+
+    argv = _build_claude_argv("hi", cwd=tmp_path)
+    assert argv[0] == "claude"
+    assert "runuser" not in argv
+    assert "sudo" not in argv
+    assert "--permission-mode" not in argv
+
+
+def test_run_step_returns_failed_result_when_user_creation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise UserCreationError("autoclaude user cannot be created. Open an issue.")
+
+    monkeypatch.setattr(claude_proc, "_build_claude_argv", _boom)
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+    result = run_step("anything", cwd=cwd, step_id=1)
+    assert not result.ok
+    assert "issue" in result.stderr.lower()
+    assert "issue" in result.summary.lower()
 
 
 def test_run_step_flags_bail_marker(tmp_path, monkeypatch) -> None:

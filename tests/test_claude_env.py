@@ -1,0 +1,289 @@
+"""Tests for the claude environment / privilege-drop helpers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from autoclaude import claude_env
+from autoclaude.claude_env import (
+    UserCreationError,
+    _read_settings_file,
+    ensure_autoclaude_user,
+    is_root,
+    read_default_permission_mode,
+    reset_caches,
+    share_claude_config,
+    share_repo,
+    should_bypass_permissions,
+    wrap_for_user,
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_caches() -> None:
+    reset_caches()
+
+
+def _write_settings(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_read_settings_file_returns_empty_on_missing(tmp_path: Path) -> None:
+    assert _read_settings_file(tmp_path / "absent.json") == {}
+
+
+def test_read_settings_file_returns_empty_on_bad_json(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert _read_settings_file(bad) == {}
+
+
+def test_read_settings_file_returns_empty_on_non_dict_root(tmp_path: Path) -> None:
+    arr = tmp_path / "arr.json"
+    arr.write_text("[1, 2]", encoding="utf-8")
+    assert _read_settings_file(arr) == {}
+
+
+def test_read_default_permission_mode_user_settings(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    assert read_default_permission_mode(home=home, cwd=cwd) == "auto"
+
+
+def test_read_default_permission_mode_project_overrides_user(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    _write_settings(cwd / ".claude" / "settings.json", {"permissions": {"defaultMode": "plan"}})
+    assert read_default_permission_mode(home=home, cwd=cwd) == "plan"
+
+
+def test_read_default_permission_mode_returns_none_when_absent(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    assert read_default_permission_mode(home=home, cwd=cwd) is None
+
+
+def test_read_default_permission_mode_ignores_non_dict_permissions(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": ["allow-all"]})
+    assert read_default_permission_mode(home=home, cwd=cwd) is None
+
+
+def test_should_bypass_true_when_mode_not_auto(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "plan"}})
+    assert should_bypass_permissions(home=home, cwd=cwd) is True
+
+
+def test_should_bypass_false_when_mode_is_auto(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    assert should_bypass_permissions(home=home, cwd=cwd) is False
+
+
+def test_should_bypass_true_when_no_settings(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    assert should_bypass_permissions(home=home, cwd=cwd) is True
+
+
+def test_is_root_reflects_geteuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    assert is_root() is True
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 1000)
+    assert is_root() is False
+
+
+def test_ensure_autoclaude_user_skips_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: True)
+    monkeypatch.setattr(claude_env, "_group_exists", lambda _g: True)
+    monkeypatch.setattr(claude_env, "_root_in_group", lambda _g: True)
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: calls.append(argv) or True)
+    ensure_autoclaude_user()
+    assert calls == []
+
+
+def test_ensure_autoclaude_user_creates_group_user_and_adds_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = {"user": False, "group": False, "root_in_group": False}
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: state["user"])
+    monkeypatch.setattr(claude_env, "_group_exists", lambda _g: state["group"])
+    monkeypatch.setattr(claude_env, "_root_in_group", lambda _g: state["root_in_group"])
+
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_kw: object) -> bool:
+        calls.append(argv)
+        if argv[0] == "groupadd":
+            state["group"] = True
+        if argv[0] == "useradd":
+            state["user"] = True
+        if argv[0] == "usermod":
+            state["root_in_group"] = True
+        return True
+
+    monkeypatch.setattr(claude_env, "_run_cmd", _fake_run)
+
+    ensure_autoclaude_user()
+
+    issued = [c[0] for c in calls]
+    assert "groupadd" in issued
+    assert "useradd" in issued
+    assert "usermod" in issued
+
+
+def test_ensure_autoclaude_user_falls_back_to_adduser(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = {"user": False, "group": True, "root_in_group": True}
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: state["user"])
+    monkeypatch.setattr(claude_env, "_group_exists", lambda _g: state["group"])
+    monkeypatch.setattr(claude_env, "_root_in_group", lambda _g: state["root_in_group"])
+
+    issued: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_kw: object) -> bool:
+        issued.append(argv)
+        if argv[0] == "useradd":
+            return False
+        if argv[0] == "adduser":
+            state["user"] = True
+            return True
+        return True
+
+    monkeypatch.setattr(claude_env, "_run_cmd", _fake_run)
+    ensure_autoclaude_user()
+    cmds = [c[0] for c in issued]
+    assert cmds == ["useradd", "adduser"]
+
+
+def test_ensure_autoclaude_user_raises_when_no_tooling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: True)
+    monkeypatch.setattr(claude_env, "_group_exists", lambda _g: False)
+    monkeypatch.setattr(claude_env, "_root_in_group", lambda _g: True)
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda *_a, **_k: False)
+    with pytest.raises(UserCreationError) as excinfo:
+        ensure_autoclaude_user()
+    assert "github.com/grezy-software/autoclaude-cli/issues" in str(excinfo.value)
+
+
+def test_ensure_autoclaude_user_raises_when_user_creation_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: False)
+    monkeypatch.setattr(claude_env, "_group_exists", lambda _g: True)
+    monkeypatch.setattr(claude_env, "_root_in_group", lambda _g: True)
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda *_a, **_k: False)
+    with pytest.raises(UserCreationError) as excinfo:
+        ensure_autoclaude_user()
+    assert "issue" in str(excinfo.value).lower()
+
+
+class _FakePwEntry:
+    def __init__(self, home: Path) -> None:
+        self.pw_dir = str(home)
+
+
+def test_share_claude_config_symlinks_and_chgrps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    src = home / ".claude"
+    src.mkdir()
+    (src / "settings.json").write_text("{}", encoding="utf-8")
+
+    autoclaude_home = tmp_path / "home" / "autoclaude"
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", lambda _u: _FakePwEntry(autoclaude_home))
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+
+    share_claude_config(home=home)
+
+    target = autoclaude_home / ".claude"
+    assert target.is_symlink()
+    assert target.resolve() == src.resolve()
+    cmds = [c[0] for c in invoked]
+    assert "chgrp" in cmds
+    assert "chmod" in cmds
+
+
+def test_share_claude_config_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", lambda _u: _FakePwEntry(tmp_path / "home" / "autoclaude"))
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+
+    share_claude_config(home=home)
+    first_call_count = len(invoked)
+    share_claude_config(home=home)
+    assert len(invoked) == first_call_count
+
+
+def test_share_claude_config_handles_missing_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    share_claude_config(home=home)
+    assert invoked == []
+
+
+def test_share_repo_chgrps_once_per_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    share_repo(repo)
+    first = len(invoked)
+    share_repo(repo)
+    assert len(invoked) == first
+
+
+def test_wrap_for_user_uses_runuser(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+    wrapped = wrap_for_user(["claude", "-p", "hi"])
+    assert wrapped[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
+    assert wrapped[5:] == ["claude", "-p", "hi"]
+
+
+def test_wrap_for_user_falls_back_to_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _which(name: str) -> str | None:
+        if name == "sudo":
+            return "/usr/bin/sudo"
+        return None
+
+    monkeypatch.setattr(claude_env.shutil, "which", _which)
+    wrapped = wrap_for_user(["claude"])
+    assert wrapped[:5] == ["sudo", "-E", "-u", "autoclaude", "--"]
+    assert wrapped[5:] == ["claude"]
+
+
+def test_wrap_for_user_raises_when_no_tooling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.shutil, "which", lambda _name: None)
+    with pytest.raises(UserCreationError) as excinfo:
+        wrap_for_user(["claude"])
+    assert "issue" in str(excinfo.value).lower()
+
+
+def test_log_mode_once_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dedupe is asserted via the cache state since autoclaude's logger does not propagate to caplog."""
+    emitted: list[str] = []
+    monkeypatch.setattr(claude_env._log, "info", lambda fmt, *a, **_kw: emitted.append(fmt % a if a else fmt))  # noqa: SLF001
+    claude_env.log_mode_once("hello")
+    claude_env.log_mode_once("hello")
+    claude_env.log_mode_once("world")
+    assert emitted == ["hello", "world"]
