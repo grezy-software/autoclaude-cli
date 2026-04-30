@@ -16,6 +16,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from autoclaude.api_client import ApiError
+from autoclaude.config import Config
 from autoclaude.log_uploader import replay_pending
 from autoclaude.logger import get_logger, profile_context
 from autoclaude.runner import run_tick as runner_run_tick
@@ -73,11 +74,20 @@ class Scheduler:
         _log.info("scheduler stopped", extra={"source": "cli"})
 
     def _run_cycle(self) -> None:
+        # Reload config each cycle so `autoclaude --profile X pause/play`
+        # takes effect on the next tick without restarting the scheduler.
+        try:
+            paused_names = {p.name for p in Config.load().profiles.values() if p.paused}
+        except Exception:  # noqa: BLE001 (a corrupt config must not stop the loop)
+            paused_names = set()
         for client in self._clients:
             if self._stop.is_set():
                 return
             name = getattr(getattr(client, "profile", None), "name", None) or "?"
             with profile_context(name):
+                if name in paused_names:
+                    _log.info("profile %r paused; skipping tick", name, extra={"source": "cli"})
+                    continue
                 self._run_one(client)
 
     def _run_one(self, client: ApiClient) -> None:
