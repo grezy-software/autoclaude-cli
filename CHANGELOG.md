@@ -1,3 +1,10 @@
+## [2.5.13](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.12...v2.5.13) (2026-05-01)
+
+
+### Bug Fixes
+
+* **tick:** improve autotick to solve issue and add a `restart` command ([d440356](https://github.com/grezy-software/autoclaude-cli/commit/d4403567a355d74adfafaf877c495613bcbe71f7))
+
 ## [2.5.12](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.11...v2.5.12) (2026-05-01)
 
 
