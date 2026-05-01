@@ -1,3 +1,10 @@
+# [2.6.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.13...v2.6.0) (2026-05-01)
+
+
+### Features
+
+* **issuer:** include PR URL in plan-done comment ([cc18f3f](https://github.com/grezy-software/autoclaude-cli/commit/cc18f3f7fc4da5afe9c2db284588063d6ded7da4))
+
 ## [2.5.13](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.12...v2.5.13) (2026-05-01)
 
 
