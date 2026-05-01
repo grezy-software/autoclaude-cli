@@ -520,17 +520,11 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> tuple[list[str], dict[str, 
                 "permissions) before starting ticks."
             )
             raise UserCreationError(msg)
-        claude_env.share_repo(cwd)
-        # Re-grant the autoclaude group read access to ~/.claude/.credentials.json
-        # before every tick. claude rewrites this file on token rotation with
-        # mode 0600 root:root, which silently breaks auth for the autoclaude
-        # user (and emits no events in stream-json mode). Cost is two cheap
-        # syscalls on a tiny file.
-        claude_env.share_claude_credentials()
-        # Expose the operator's `gh` config to the autoclaude user so any agent
-        # invoking `gh` from inside the claude subprocess sees the same
-        # authenticated session the runner already validated.
-        claude_env.share_gh_config()
+        # Single entry point for the per-tick shares the wrapped claude
+        # subprocess depends on (credentials, gh, worktree). Centralising
+        # this guarantees that any future launch path that hits ``run_step``
+        # cannot silently skip one of the helpers.
+        claude_env.share_per_tick_for_autoclaude_user(cwd=cwd)
         argv = claude_env.wrap_for_user(argv)
         # Force HOME to the autoclaude user's actual home; --preserve-environment
         # would otherwise leak HOME=/root and the wrapped claude would lock the

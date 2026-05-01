@@ -15,6 +15,7 @@ import signal
 import threading
 from typing import TYPE_CHECKING
 
+from autoclaude import claude_env
 from autoclaude.api_client import ApiError
 from autoclaude.config import Config
 from autoclaude.log_uploader import replay_pending
@@ -67,6 +68,16 @@ class Scheduler:
             len(self._clients),
             extra={"source": "cli"},
         )
+        # Pre-warm the autoclaude-user shares once at service startup. This is
+        # belt-and-suspenders on top of the per-step share inside ``run_step``:
+        # if anything ever bypasses that path, the long-running scheduler still
+        # leaves the operator's claude/gh sessions visible to the dropped user.
+        # Skipped silently when not running as root (no privilege drop needed).
+        if claude_env.is_root() and claude_env.autoclaude_user_exists():
+            try:
+                claude_env.share_per_tick_for_autoclaude_user()
+            except claude_env.UserCreationError as exc:
+                _log.warning("scheduler pre-share failed: %s", exc, extra={"source": "cli"})
         while not self._stop.is_set():
             self._run_cycle()
             if self._stop.wait(self._interval):

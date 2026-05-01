@@ -301,6 +301,57 @@ def test_share_claude_credentials_no_op_when_file_missing(tmp_path: Path, monkey
     assert invoked == []
 
 
+def test_share_gh_config_chgrps_and_symlinks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    gh_dir = home / ".config" / "gh"
+    gh_dir.mkdir(parents=True)
+    (gh_dir / "hosts.yml").write_text("github.com: {}", encoding="utf-8")
+    autoclaude_home = tmp_path / "home" / "autoclaude"
+    autoclaude_home.mkdir(parents=True)
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", lambda _u: _FakePwEntry(autoclaude_home))
+
+    claude_env.share_gh_config(home=home)
+
+    target = autoclaude_home / ".config" / "gh"
+    assert target.is_symlink()
+    assert target.resolve() == gh_dir.resolve()
+    assert ["chgrp", "-R", claude_env.AUTOCLAUDE_GROUP, str(gh_dir)] in invoked
+    assert ["chmod", "-R", "g+rwX", str(gh_dir)] in invoked
+
+
+def test_share_gh_config_no_op_when_dir_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    claude_env.share_gh_config(home=home)
+    assert invoked == []
+
+
+def test_share_per_tick_for_autoclaude_user_calls_per_tick_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The per-tick entry point must call credentials + gh + repo, never install-time helpers."""
+    calls: list[str] = []
+    monkeypatch.setattr(claude_env, "share_claude_credentials", lambda *_a, **_kw: calls.append("creds"))
+    monkeypatch.setattr(claude_env, "share_gh_config", lambda *_a, **_kw: calls.append("gh"))
+    monkeypatch.setattr(claude_env, "share_repo", lambda *_a, **_kw: calls.append("repo"))
+
+    def _must_not_run(*_a: object, **_kw: object) -> None:
+        raise AssertionError("install-time helper called from per-tick path")
+
+    monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
+
+    claude_env.share_per_tick_for_autoclaude_user(cwd=Path("/tmp/repo"))
+    assert calls == ["creds", "gh", "repo"]
+
+    calls.clear()
+    claude_env.share_per_tick_for_autoclaude_user()
+    assert calls == ["creds", "gh"], "no cwd -> share_repo skipped"
+
+
 def test_share_repo_chgrps_once_per_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -314,9 +365,10 @@ def test_share_repo_chgrps_once_per_cwd(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_wrap_for_user_uses_runuser(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+    monkeypatch.setattr(claude_env, "_resolve_home", lambda _u: "/home/autoclaude")
     wrapped = wrap_for_user(["claude", "-p", "hi"])
     assert wrapped[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
-    assert wrapped[5:] == ["claude", "-p", "hi"]
+    assert wrapped[5:] == ["env", "HOME=/home/autoclaude", "claude", "-p", "hi"]
 
 
 def test_wrap_for_user_falls_back_to_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,9 +378,10 @@ def test_wrap_for_user_falls_back_to_sudo(monkeypatch: pytest.MonkeyPatch) -> No
         return None
 
     monkeypatch.setattr(claude_env.shutil, "which", _which)
+    monkeypatch.setattr(claude_env, "_resolve_home", lambda _u: "/home/autoclaude")
     wrapped = wrap_for_user(["claude"])
     assert wrapped[:5] == ["sudo", "-E", "-u", "autoclaude", "--"]
-    assert wrapped[5:] == ["claude"]
+    assert wrapped[5:] == ["env", "HOME=/home/autoclaude", "claude"]
 
 
 def test_wrap_for_user_raises_when_no_tooling(monkeypatch: pytest.MonkeyPatch) -> None:

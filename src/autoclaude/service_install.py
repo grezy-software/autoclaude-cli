@@ -217,6 +217,23 @@ def _macos_disable(kind: ServiceKind) -> None:
     _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
 
 
+def _macos_restart(kind: ServiceKind) -> InstallResult:
+    """Restart the launchd service if it's loaded; install + start it otherwise.
+
+    ``launchctl kickstart -k`` sends SIGTERM and re-launches; ``-k`` is the
+    kill-and-restart flag. Falls back to a fresh ``bootstrap`` when the
+    service isn't loaded yet (post-uninstall, post-pause).
+    """
+    uid = _macos_uid()
+    label = _label(kind)
+    plist_path = _macos_plist_path(kind)
+    result = _run(["launchctl", "kickstart", "-k", f"gui/{uid}/{label}"])
+    if result.returncode == 0:
+        return InstallResult(platform="darwin", action="restarted", detail=str(plist_path))
+    binary = _resolve_autoclaude_binary()
+    return _macos_bootstrap(kind, binary)
+
+
 def _macos_status(kind: ServiceKind) -> InstallResult:
     uid = _macos_uid()
     label = _label(kind)
@@ -238,13 +255,19 @@ def _systemd_unit_path(kind: ServiceKind) -> Path:
 
 def _systemd_unit_body(binary: str, kind: ServiceKind) -> str:
     subcommand = _service_subcommand(kind)
+    # systemd splits ``Environment=KEY=VAL`` on whitespace and parses each
+    # token as its own assignment, so a PATH containing Windows paths under
+    # WSL (``/mnt/c/Program Files...``) is silently rejected. Quoting the
+    # whole assignment with double quotes preserves embedded spaces.
+    path_value = _service_path().replace("\\", "\\\\").replace('"', '\\"')
     return f"""[Unit]
 Description=AutoClaude {kind} service
 After=network-online.target
 
 [Service]
 Type=simple
-Environment=PATH={_service_path()}
+Environment="PATH={path_value}"
+Environment=HOME=%h
 ExecStart={binary} {subcommand}
 Restart=on-failure
 RestartSec=10
@@ -292,6 +315,25 @@ def _systemd_status(kind: ServiceKind) -> InstallResult:
         action="status",
         detail=(result.stdout.strip() or "unknown"),
     )
+
+
+def _systemd_restart(kind: ServiceKind) -> InstallResult:
+    """Restart the systemd unit; install it first if missing.
+
+    ``systemctl --user restart`` is a no-op-then-start when the unit is not
+    yet loaded, so we (re)install the unit file first to ensure it reflects
+    the current binary path and PATH/HOME contents.
+    """
+    unit_path = _systemd_unit_path(kind)
+    binary = _resolve_autoclaude_binary()
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(_systemd_unit_body(binary, kind))
+    _run(["systemctl", "--user", "daemon-reload"])
+    result = _run(["systemctl", "--user", "restart", _systemd_unit(kind)])
+    if result.returncode != 0:
+        msg = f"systemctl --user restart failed: {result.stderr.strip() or result.stdout.strip()}"
+        raise ServiceInstallError(msg)
+    return InstallResult(platform="linux", action="restarted", detail=str(unit_path))
 
 
 def _systemd_disable(kind: ServiceKind) -> None:
@@ -344,6 +386,20 @@ def _windows_status(kind: ServiceKind) -> InstallResult:
         action="status",
         detail=("registered" if result.returncode == 0 else "not_registered"),
     )
+
+
+def _windows_restart(kind: ServiceKind) -> InstallResult:
+    """End and re-run a scheduled task. Re-creates it if missing."""
+    name = _schtasks_name(kind)
+    end = _run(["schtasks.exe", "/End", "/TN", name])
+    if end.returncode != 0:
+        binary = _resolve_autoclaude_binary()
+        return _windows_install(kind, binary)
+    result = _run(["schtasks.exe", "/Run", "/TN", name])
+    if result.returncode != 0:
+        msg = f"schtasks /Run failed: {result.stderr.strip() or result.stdout.strip()}"
+        raise ServiceInstallError(msg)
+    return InstallResult(platform="win32", action="restarted", detail=name)
 
 
 def _windows_disable(kind: ServiceKind) -> None:
@@ -409,6 +465,42 @@ def status_service(kind: ServiceKind) -> InstallResult:
     raise ServiceInstallError(msg)
 
 
+def restart_service(kind: ServiceKind) -> InstallResult:
+    """Restart a single per-user service in place.
+
+    Re-writes the unit/plist file from the current binary path and template
+    so a freshly upgraded ``autoclaude-cli`` is picked up, then bounces the
+    process. Falls back to a full install if the service is not loaded.
+    """
+    if sys.platform == "darwin":
+        return _macos_restart(kind)
+    if sys.platform.startswith("linux"):
+        return _systemd_restart(kind)
+    if sys.platform.startswith("win"):
+        return _windows_restart(kind)
+    msg = f"unsupported platform: {sys.platform}"
+    raise ServiceInstallError(msg)
+
+
+def restart_all() -> list[InstallResult]:
+    """Restart heartbeat + scheduler.
+
+    Use after ``uv tool install --force`` (or any upgrade path) so the
+    long-running services pick up the new code. Each service is restarted
+    independently; if one fails, the other still gets bounced.
+    """
+    results: list[InstallResult] = []
+    errors: list[ServiceInstallError] = []
+    for kind in ("heartbeat", "scheduler"):
+        try:
+            results.append(restart_service(kind))
+        except ServiceInstallError as exc:
+            errors.append(exc)
+    if errors and not results:
+        raise errors[0]
+    return results
+
+
 def install_all() -> list[InstallResult]:
     """Install both heartbeat and scheduler services.
 
@@ -461,6 +553,8 @@ __all__ = [
     "install_service",
     "pause_scheduler",
     "play_scheduler",
+    "restart_all",
+    "restart_service",
     "status_service",
     "uninstall_all",
     "uninstall_service",

@@ -463,23 +463,58 @@ def autoclaude_subprocess_env_overrides(*, username: str = AUTOCLAUDE_USER) -> d
     return {"HOME": home}
 
 
+def _resolve_home(username: str) -> str:
+    """Best-effort resolution of ``username``'s home dir. Falls back to ``/home/<user>``."""
+    try:
+        return pwd.getpwnam(username).pw_dir
+    except KeyError:
+        return f"/home/{username}"
+
+
 def wrap_for_user(argv: list[str], *, username: str = AUTOCLAUDE_USER) -> list[str]:
     """Prefix ``argv`` so it runs as ``username`` while keeping the parent env.
 
     Prefers ``runuser`` (no PAM session, fewer surprises); falls back to
     ``sudo -E -u`` when ``runuser`` is missing. Raises :class:`UserCreationError`
     when neither tool is available.
+
+    ``HOME`` is forced to the dropped user's home via an explicit ``env``
+    prefix so the value is visible in the launch command (logs, ps output,
+    error reporting) and does not silently depend on the parent's
+    ``subprocess.Popen(env=...)`` propagation. ``--preserve-environment``
+    keeps the rest of the parent's env (PATH, API tokens, etc.); the trailing
+    ``env HOME=...`` overrides only the one var that must change.
     """
+    home = _resolve_home(username)
+    env_prefix = ["env", f"HOME={home}"]
     if shutil.which("runuser"):
-        return ["runuser", "-u", username, "--preserve-environment", "--", *argv]
+        return ["runuser", "-u", username, "--preserve-environment", "--", *env_prefix, *argv]
     if shutil.which("sudo"):
         _log.warning("`runuser` not found; falling back to `sudo -E -u %s`", username)
-        return ["sudo", "-E", "-u", username, "--", *argv]
+        return ["sudo", "-E", "-u", username, "--", *env_prefix, *argv]
     raise UserCreationError(
         _remediation(
             f"Cannot drop privileges to '{username}': neither `runuser` nor `sudo` is available.",
         ),
     )
+
+
+def share_per_tick_for_autoclaude_user(*, cwd: Path | None = None) -> None:
+    """Apply every per-tick share so the autoclaude user inherits the operator's session.
+
+    Single entry point that the runner, scheduler, and any future launch path
+    can call so they cannot accidentally bypass one of the per-tick helpers.
+    Idempotent and cached per-process; safe to call on every tick or service
+    cycle. ``cwd`` is optional: when provided, the worktree is also shared so
+    the autoclaude user can read/write the per-tick checkout. Install-time
+    helpers (``share_claude_config``, ``share_claude_binary``) are deliberately
+    excluded: ``autoclaude init`` owns those, and re-running ``chgrp -R`` on
+    ``~/.claude`` mid-tick would be needlessly expensive.
+    """
+    share_claude_credentials()
+    share_gh_config()
+    if cwd is not None:
+        share_repo(cwd)
 
 
 def log_mode_once(message: str) -> None:

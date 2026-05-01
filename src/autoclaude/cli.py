@@ -37,6 +37,7 @@ from autoclaude.service_install import (
     install_all,
     pause_scheduler,
     play_scheduler,
+    restart_all,
     status_service,
     uninstall_all,
 )
@@ -892,6 +893,31 @@ def logs(
     cmd.extend(str(p) for p in targets)
     with contextlib.suppress(KeyboardInterrupt):
         subprocess.run(cmd, check=False)
+
+
+@app.command()
+def restart() -> None:
+    """Restart heartbeat + scheduler so freshly-installed code is picked up.
+
+    Long-running services hold the old code in memory until bounced. After
+    an ``uv tool install`` / ``uv tool upgrade`` (or any local rebuild), run
+    this to re-apply the unit/plist template and restart both processes.
+    Each service is restarted independently: a failure on one does not
+    skip the other.
+    """
+    try:
+        results = restart_all()
+    except ServiceInstallError as exc:
+        _log.error("[red]restart failed[/red]: %s", exc, extra={"source": "cli"})
+        raise typer.Exit(code=1) from exc
+    if not results:
+        _log.warning(
+            "[yellow]no services restarted[/yellow]; run `autoclaude install-services` first.",
+            extra={"source": "cli"},
+        )
+        return
+    for result in results:
+        _log.info("[green]restarted[/green] (%s)", result.detail, extra={"source": "cli"})
 
 
 @app.command(name="uninstall-services")

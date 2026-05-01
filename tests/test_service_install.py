@@ -175,6 +175,101 @@ def test_play_scheduler_reinstalls(monkeypatch) -> None:
     assert service_install.play_scheduler() is sentinel
 
 
+def test_systemd_restart_writes_unit_and_runs_systemctl(tmp_path: Path, monkeypatch) -> None:
+    unit_path = tmp_path / "autoclaude-scheduler.service"
+    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda _kind: unit_path)
+    monkeypatch.setattr(service_install, "_resolve_autoclaude_binary", lambda: "/usr/local/bin/autoclaude")
+    run_mock = MagicMock(return_value=_ok())
+    monkeypatch.setattr(service_install, "_run", run_mock)
+
+    result = service_install._systemd_restart("scheduler")  # noqa: SLF001
+
+    assert unit_path.exists()
+    cmds = [c.args[0] for c in run_mock.call_args_list]
+    assert ["systemctl", "--user", "daemon-reload"] in cmds
+    assert ["systemctl", "--user", "restart", SCHEDULER_SYSTEMD_UNIT] in cmds
+    assert result.action == "restarted"
+
+
+def test_systemd_restart_raises_on_failure(tmp_path: Path, monkeypatch) -> None:
+    unit_path = tmp_path / "autoclaude-scheduler.service"
+    monkeypatch.setattr(service_install, "_systemd_unit_path", lambda _kind: unit_path)
+    monkeypatch.setattr(service_install, "_resolve_autoclaude_binary", lambda: "/x")
+
+    def _fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[:2] == ["systemctl", "--user"] and cmd[2] == "restart":
+            return _fail("unit not loaded")
+        return _ok()
+
+    monkeypatch.setattr(service_install, "_run", _fake_run)
+
+    with pytest.raises(ServiceInstallError, match="unit not loaded"):
+        service_install._systemd_restart("scheduler")  # noqa: SLF001
+
+
+def test_macos_restart_uses_kickstart(monkeypatch) -> None:
+    monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: Path("/tmp/x.plist"))  # noqa: S108
+    run_mock = MagicMock(return_value=_ok())
+    monkeypatch.setattr(service_install, "_run", run_mock)
+
+    result = service_install._macos_restart("scheduler")  # noqa: SLF001
+
+    cmds = [c.args[0] for c in run_mock.call_args_list]
+    assert ["launchctl", "kickstart", "-k", f"gui/501/{SCHEDULER_LABEL}"] in cmds
+    assert result.action == "restarted"
+
+
+def test_macos_restart_falls_back_to_bootstrap_when_not_loaded(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(service_install.os, "getuid", lambda: 501)
+    plist_path = tmp_path / "scheduler.plist"
+    monkeypatch.setattr(service_install, "_macos_plist_path", lambda _kind: plist_path)
+    monkeypatch.setattr(service_install, "_resolve_autoclaude_binary", lambda: "/x")
+
+    def _fake_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        if cmd[:3] == ["launchctl", "kickstart", "-k"]:
+            return _fail("service not loaded")
+        return _ok()
+
+    monkeypatch.setattr(service_install, "_run", _fake_run)
+    result = service_install._macos_restart("scheduler")  # noqa: SLF001
+    assert plist_path.exists()
+    assert result.action == "installed"
+
+
+def test_restart_all_bounces_both_services(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_restart(kind: str) -> service_install.InstallResult:
+        calls.append(kind)
+        return service_install.InstallResult(platform="t", action="restarted", detail=kind)
+
+    monkeypatch.setattr(service_install, "restart_service", fake_restart)
+    results = service_install.restart_all()
+    assert calls == ["heartbeat", "scheduler"]
+    assert [r.detail for r in results] == ["heartbeat", "scheduler"]
+
+
+def test_restart_all_continues_after_partial_failure(monkeypatch) -> None:
+    def fake_restart(kind: str) -> service_install.InstallResult:
+        if kind == "heartbeat":
+            raise ServiceInstallError("heartbeat boom")
+        return service_install.InstallResult(platform="t", action="restarted", detail=kind)
+
+    monkeypatch.setattr(service_install, "restart_service", fake_restart)
+    results = service_install.restart_all()
+    assert [r.detail for r in results] == ["scheduler"]
+
+
+def test_restart_all_raises_when_every_service_fails(monkeypatch) -> None:
+    def fake_restart(_kind: str) -> service_install.InstallResult:
+        raise ServiceInstallError("every kind boom")
+
+    monkeypatch.setattr(service_install, "restart_service", fake_restart)
+    with pytest.raises(ServiceInstallError, match="every kind boom"):
+        service_install.restart_all()
+
+
 def test_resolve_autoclaude_binary_prefers_env_override(monkeypatch) -> None:
     monkeypatch.setenv("AUTOCLAUDE_BINARY", "/opt/bin/autoclaude")
     assert service_install._resolve_autoclaude_binary() == "/opt/bin/autoclaude"  # noqa: SLF001
