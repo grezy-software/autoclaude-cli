@@ -145,6 +145,23 @@ def pr_create(
     return result.stdout.strip()
 
 
+def pr_url_for_branch(*, head: str, cwd: Path) -> str | None:
+    """Return the URL of the open PR whose head ref is ``head``, or None.
+
+    Used to recover the PR URL when ``pr_create`` fails because a PR is
+    already open for the branch (the agent may have opened it itself).
+    """
+    result = gh(
+        ["pr", "view", head, "--json", "url", "--jq", ".url"],
+        cwd=cwd,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    url = result.stdout.strip()
+    return url or None
+
+
 def pr_merge(
     *,
     pr_url: str,
@@ -185,6 +202,7 @@ __all__ = [
     "is_installed",
     "pr_create",
     "pr_merge",
+    "pr_url_for_branch",
     "repo_create",
     "repo_exists",
 ]

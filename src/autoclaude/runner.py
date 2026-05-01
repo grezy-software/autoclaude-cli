@@ -1100,10 +1100,21 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
                             head=worktree.branch,
                             cwd=worktree.path,
                         )
+                        outcome = f"opened PR {worktree.branch} -> {base_branch_input}: {pr_url}"
                     except GhError as exc:
-                        return f"skipped: {exc}"
+                        # The agent may have opened the PR itself (so it could
+                        # link to it from a plan-done comment). Fall back to
+                        # looking up the URL by branch so the tick summary and
+                        # auto_merge path still see a PR URL.
+                        existing = gh_helpers.pr_url_for_branch(
+                            head=worktree.branch,
+                            cwd=worktree.path,
+                        )
+                        if existing is None:
+                            return f"skipped: {exc}"
+                        pr_url = existing
+                        outcome = f"PR already open {worktree.branch} -> {base_branch_input}: {pr_url}"
                     state.pr_url = pr_url
-                    outcome = f"opened PR {worktree.branch} -> {base_branch_input}: {pr_url}"
                     if auto_merge:
                         try:
                             gh_helpers.pr_merge(
