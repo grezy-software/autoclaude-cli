@@ -18,6 +18,7 @@ Failure detection has three layers:
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import os
@@ -27,12 +28,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any
 
 from autoclaude import claude_env
 from autoclaude.claude_env import UserCreationError
-from autoclaude.logger import get_logger
+from autoclaude.logger import allocate_stream_log_path, get_logger
 
 _log = get_logger("claude")
 
@@ -285,6 +287,31 @@ def _log_event(event: dict[str, Any], *, step_id: int | None) -> None:
     )
 
 
+def _write_stream_archive(
+    handle: IO[str] | None,
+    lock: threading.Lock | None,
+    kind: str,
+    line: str,
+) -> None:
+    """Append ``line`` to the per-step stream archive, thread-safe.
+
+    Errors are swallowed: the archive is a best-effort debug aid; failing it
+    must not crash a tick. ``kind`` is ``"stdout"`` or ``"stderr"`` so the
+    operator can tell the streams apart in the merged file.
+    """
+    if handle is None or lock is None:
+        return
+    timestamp = datetime.now(UTC).strftime("%H:%M:%S.%f")[:-3]
+    payload = line if line.endswith("\n") else line + "\n"
+    record = f"{timestamp} {kind}: {payload}"
+    with lock:
+        try:
+            handle.write(record)
+            handle.flush()
+        except (OSError, ValueError):
+            return
+
+
 def _read_stdout(
     stream: IO[str],
     *,
@@ -293,10 +320,13 @@ def _read_stdout(
     step_id: int | None,
     result_seen: threading.Event | None = None,
     idle_pulse: threading.Event | None = None,
+    stream_archive: IO[str] | None = None,
+    stream_archive_lock: threading.Lock | None = None,
 ) -> None:
     try:
         for line in stream:
             raw_buffer.append(line)
+            _write_stream_archive(stream_archive, stream_archive_lock, "stdout", line)
             if idle_pulse is not None:
                 idle_pulse.set()
             text = line.strip()
@@ -330,10 +360,13 @@ def _read_stderr(
     buffer: list[str],
     step_id: int | None,
     idle_pulse: threading.Event | None = None,
+    stream_archive: IO[str] | None = None,
+    stream_archive_lock: threading.Lock | None = None,
 ) -> None:
     try:
         for line in stream:
             buffer.append(line)
+            _write_stream_archive(stream_archive, stream_archive_lock, "stderr", line)
             if idle_pulse is not None:
                 idle_pulse.set()
             text = line.rstrip("\n")
@@ -441,8 +474,13 @@ def _format_argv_for_log(argv: list[str]) -> str:
     return " ".join(pieces)
 
 
-def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
-    """Compose the ``claude`` argv adapted to host environment.
+def _build_claude_argv(prompt: str, *, cwd: Path) -> tuple[list[str], dict[str, str]]:
+    """Compose the ``claude`` argv and env overrides adapted to the host environment.
+
+    Returns ``(argv, env_overrides)``. ``env_overrides`` is empty unless we wrap
+    with ``runuser``; in that case it carries the env vars that must replace
+    the parent's (currently just ``HOME``, see
+    :func:`claude_env.autoclaude_subprocess_env_overrides` for why).
 
     - Drops ``--permission-mode bypassPermissions`` when ``defaultMode=auto`` is
       already configured (in user or project settings).
@@ -460,6 +498,7 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
         "--model",
         _AGENT_MODEL,
     ]
+    env_overrides: dict[str, str] = {}
     bypass = claude_env.should_bypass_permissions(cwd=cwd)
     if bypass:
         argv.extend(["--permission-mode", "bypassPermissions"])
@@ -482,9 +521,23 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> list[str]:
             )
             raise UserCreationError(msg)
         claude_env.share_repo(cwd)
+        # Re-grant the autoclaude group read access to ~/.claude/.credentials.json
+        # before every tick. claude rewrites this file on token rotation with
+        # mode 0600 root:root, which silently breaks auth for the autoclaude
+        # user (and emits no events in stream-json mode). Cost is two cheap
+        # syscalls on a tiny file.
+        claude_env.share_claude_credentials()
+        # Expose the operator's `gh` config to the autoclaude user so any agent
+        # invoking `gh` from inside the claude subprocess sees the same
+        # authenticated session the runner already validated.
+        claude_env.share_gh_config()
         argv = claude_env.wrap_for_user(argv)
+        # Force HOME to the autoclaude user's actual home; --preserve-environment
+        # would otherwise leak HOME=/root and the wrapped claude would lock the
+        # same session files as the parent claude, hanging in epoll_wait forever.
+        env_overrides.update(claude_env.autoclaude_subprocess_env_overrides())
         claude_env.log_mode_once(f"[claude_env] sandbox_user={claude_env.AUTOCLAUDE_USER} (host UID=0)")
-    return argv
+    return argv, env_overrides
 
 
 def _user_creation_failure(exc: UserCreationError, *, started: float, step_id: int | None) -> ClaudeResult:
@@ -503,7 +556,7 @@ def _user_creation_failure(exc: UserCreationError, *, started: float, step_id: i
     return ClaudeResult(ok=False, stdout="", stderr=message, duration_ms=duration_ms, summary=message)
 
 
-def run_step(  # noqa: PLR0912, PLR0915 (subprocess lifecycle: setup, threads, wait, parse, return — splitting further hurts readability)
+def run_step(  # noqa: C901, PLR0912, PLR0915 (subprocess lifecycle: setup, threads, wait, parse, return — splitting further hurts readability)
     prompt: str,
     *,
     cwd: Path,
@@ -539,15 +592,51 @@ def run_step(  # noqa: PLR0912, PLR0915 (subprocess lifecycle: setup, threads, w
     if env:
         subprocess_env.update(env)
     try:
-        argv = _build_claude_argv(prompt, cwd=cwd)
+        argv, env_overrides = _build_claude_argv(prompt, cwd=cwd)
     except UserCreationError as exc:
         return _user_creation_failure(exc, started=started, step_id=step_id)
+    # env_overrides is non-empty only in the autoclaude-wrap branch; it forces
+    # HOME=/home/autoclaude to prevent the wrapped claude from locking the
+    # parent claude's session files. See ``_build_claude_argv``.
+    subprocess_env.update(env_overrides)
     formatted_argv = _format_argv_for_log(argv)
     _log.debug(
         "claude exec: %s",
         formatted_argv,
         extra={"source": "claude_exec", "step_id": step_id, "payload": {"argv": argv}},
     )
+    # Per-step stream archive: raw stdout + stderr of the claude subprocess so
+    # an operator can replay exactly what came out of the child, untransformed
+    # by event parsing. Errors opening the archive must not abort the tick;
+    # we degrade to no-archive and log a warning.
+    stream_archive: IO[str] | None = None
+    stream_archive_lock: threading.Lock | None = None
+    stream_archive_path: Path | None = None
+    try:
+        stream_archive_path = allocate_stream_log_path(step_id=step_id)
+        stream_archive = stream_archive_path.open("w", encoding="utf-8")
+        stream_archive_lock = threading.Lock()
+        stream_archive.write(
+            f"# claude stream archive\n"
+            f"# started_at: {datetime.now(UTC).isoformat()}\n"
+            f"# step_id: {step_id}\n"
+            f"# argv: {formatted_argv}\n"
+            f"# cwd: {cwd}\n"
+            f"# ---\n",
+        )
+        stream_archive.flush()
+    except OSError as exc:
+        _log.warning(
+            "failed to open claude stream archive at %s: %s",
+            stream_archive_path,
+            exc,
+            extra={"source": "claude_exec", "step_id": step_id},
+        )
+        if stream_archive is not None:
+            with contextlib.suppress(OSError):
+                stream_archive.close()
+        stream_archive = None
+        stream_archive_lock = None
     proc = subprocess.Popen(
         argv,
         cwd=str(cwd),
@@ -573,28 +662,41 @@ def run_step(  # noqa: PLR0912, PLR0915 (subprocess lifecycle: setup, threads, w
             "step_id": step_id,
             "result_seen": result_seen,
             "idle_pulse": idle_pulse,
+            "stream_archive": stream_archive,
+            "stream_archive_lock": stream_archive_lock,
         },
         daemon=True,
     )
     stderr_thread = threading.Thread(
         target=stderr_ctx.run,
         args=(_read_stderr, proc.stderr),
-        kwargs={"buffer": stderr_buffer, "step_id": step_id, "idle_pulse": idle_pulse},
+        kwargs={
+            "buffer": stderr_buffer,
+            "step_id": step_id,
+            "idle_pulse": idle_pulse,
+            "stream_archive": stream_archive,
+            "stream_archive_lock": stream_archive_lock,
+        },
         daemon=True,
     )
     stdout_thread.start()
     stderr_thread.start()
-    returncode, kill_reason = _wait_with_watchdog(
-        proc,
-        overall_timeout=timeout,
-        post_result_grace=post_result_grace,
-        idle_timeout=idle_timeout,
-        result_seen=result_seen,
-        idle_pulse=idle_pulse,
-        step_id=step_id,
-    )
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
+    try:
+        returncode, kill_reason = _wait_with_watchdog(
+            proc,
+            overall_timeout=timeout,
+            post_result_grace=post_result_grace,
+            idle_timeout=idle_timeout,
+            result_seen=result_seen,
+            idle_pulse=idle_pulse,
+            step_id=step_id,
+        )
+        stdout_thread.join(timeout=5)
+        stderr_thread.join(timeout=5)
+    finally:
+        if stream_archive is not None:
+            with contextlib.suppress(OSError):
+                stream_archive.close()
     duration_ms = int((time.monotonic() - started) * 1000)
     stdout_text = "".join(stdout_buffer)
     stderr_text = "".join(stderr_buffer)
@@ -651,6 +753,7 @@ def run_step(  # noqa: PLR0912, PLR0915 (subprocess lifecycle: setup, threads, w
                 "is_error": is_error_flag,
                 "fail_reason": fail_reason,
                 "kill_reason": kill_reason,
+                "stream_archive": str(stream_archive_path) if stream_archive_path else None,
             },
         },
     )

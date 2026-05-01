@@ -124,6 +124,25 @@ def _iso_now() -> str:
     return _utcnow().isoformat().replace("+00:00", "Z")
 
 
+def _format_local(iso_ts: str | None) -> str:
+    """Render a server-provided ISO-8601 timestamp in the runner's local timezone.
+
+    Server timestamps arrive in UTC. Display them in the operator's local
+    timezone so log lines like "next eligible at ..." are immediately
+    actionable without timezone math.
+    """
+    if not iso_ts or iso_ts == "?":
+        return iso_ts or "?"
+    try:
+        normalized = iso_ts.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return iso_ts
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone().isoformat(timespec="seconds")
+
+
 def _build_resumption_banner(resumed_from: dict[str, Any]) -> str:
     prior_id = resumed_from.get("tick_id")
     last_step = resumed_from.get("last_step") or {}
@@ -805,7 +824,7 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
 
     schedule = ctx.get("tick_schedule") or {}
     if schedule and schedule.get("eligible_now") is False:
-        next_eligible_at = schedule.get("next_eligible_at") or "?"
+        next_eligible_at = _format_local(schedule.get("next_eligible_at"))
         interval_minutes = schedule.get("interval_minutes")
         _log.info(
             "[dim]scheduled tick skipped[/dim]: server interval %s min, next eligible at %s",
@@ -927,7 +946,7 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
             _log.info(
                 "[dim]scheduled tick skipped[/dim]: server interval %s min, next eligible at %s",
                 sched.get("interval_minutes"),
-                sched.get("next_eligible_at") or "?",
+                _format_local(sched.get("next_eligible_at")),
                 extra={"source": "cli"},
             )
             return EXIT_OK

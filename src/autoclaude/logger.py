@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -32,6 +33,12 @@ if TYPE_CHECKING:
 LOGGER_NAME = "autoclaude"
 LOG_FILE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 LOG_FILE_BACKUP_COUNT = 5
+
+# Per-step stream archives (one file per ``run_step`` invocation, raw stdout +
+# stderr of the claude subprocess). Capped at this many files so the directory
+# never grows unbounded; the newest are kept.
+STREAMS_BACKUP_COUNT = 5
+_STREAM_LOG_GLOB = "claude-stream-*.log"
 
 _initialized = False
 
@@ -74,10 +81,59 @@ def log_file_path() -> Path:
     return log_dir() / "autoclaude.log"
 
 
+def streams_dir() -> Path:
+    """Return the directory where per-step claude stdout/stderr archives live."""
+    return log_dir() / "streams"
+
+
 def _ensure_log_dir() -> Path:
     directory = log_dir()
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def allocate_stream_log_path(*, step_id: int | None) -> Path:
+    """Reserve a stream-log path for a new ``run_step`` invocation.
+
+    Side-effects:
+      * Creates the streams directory if it does not exist.
+      * Prunes pre-existing stream logs so that, after the caller writes the
+        new file, there are at most ``STREAMS_BACKUP_COUNT`` files in the
+        directory.
+
+    The caller is responsible for opening, writing, and closing the returned
+    path. Filename format: ``claude-stream-<UTC-timestamp>-step-<id>.log`` --
+    sorting by name gives the same order as sorting by mtime.
+    """
+    directory = streams_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    _prune_stream_logs(directory, keep=max(STREAMS_BACKUP_COUNT - 1, 0))
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    suffix = f"step-{step_id}" if step_id is not None else "step-na"
+    return directory / f"claude-stream-{timestamp}-{suffix}.log"
+
+
+def _prune_stream_logs(directory: Path, *, keep: int) -> None:
+    """Delete the oldest stream logs so that only ``keep`` remain.
+
+    Sort key is mtime: filenames embed the timestamp, but mtime survives a
+    clock change between runs. Errors are swallowed (best-effort archive).
+    """
+    try:
+        files = sorted(
+            (p for p in directory.glob(_STREAM_LOG_GLOB) if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+    except OSError:
+        return
+    excess = len(files) - keep
+    if excess <= 0:
+        return
+    for path in files[:excess]:
+        try:
+            path.unlink()
+        except OSError:
+            continue
 
 
 def _build_rich_handler() -> RichHandler:
@@ -153,9 +209,12 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 __all__ = [
     "LOGGER_NAME",
+    "STREAMS_BACKUP_COUNT",
+    "allocate_stream_log_path",
     "get_logger",
     "log_dir",
     "log_file_path",
     "profile_context",
     "set_current_profile",
+    "streams_dir",
 ]

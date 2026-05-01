@@ -22,7 +22,7 @@ from autoclaude.daemon import run_daemon
 from autoclaude.gh import is_authenticated as gh_is_authenticated
 from autoclaude.gh import is_installed as gh_is_installed
 from autoclaude.log_uploader import replay_pending
-from autoclaude.logger import get_logger, log_file_path, profile_context
+from autoclaude.logger import get_logger, log_file_path, profile_context, streams_dir
 from autoclaude.runner import (
     EXIT_ABANDONED,
     EXIT_TOKEN_EXHAUSTED,
@@ -230,6 +230,16 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     _log.info("autoclaude_root: %s", prof.resolve_autoclaude_root(), extra={"source": "cli"})
     _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
     _log.info("log_file: %s", log_file_path(), extra={"source": "cli"})
+    streams_path = streams_dir()
+    streams_count = (
+        sum(1 for _ in streams_path.glob("claude-stream-*.log")) if streams_path.exists() else 0
+    )
+    _log.info(
+        "streams_dir: %s (%d archived)",
+        streams_path,
+        streams_count,
+        extra={"source": "cli"},
+    )
 
     for binary in ("claude", "gh", "git"):
         path = shutil.which(binary)
@@ -669,11 +679,12 @@ def _provision_autoclaude_runtime(*, cwd: Path, force: bool, interactive: bool) 
     try:
         claude_env.share_claude_config()
         claude_env.share_claude_binary()
+        claude_env.share_gh_config()
     except claude_env.UserCreationError as exc:
         _log.error("[red]permission setup failed[/red]: %s", exc, extra={"source": "cli"})
         return
     _log.info(
-        "[green]claude config and binary path permissions granted to the '%s' group[/green]",
+        "[green]claude config, gh config and binary path permissions granted to the '%s' group[/green]",
         claude_env.AUTOCLAUDE_GROUP,
         extra={"source": "cli"},
     )

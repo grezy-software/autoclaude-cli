@@ -12,11 +12,13 @@ from autoclaude import claude_env
 from autoclaude.claude_env import (
     UserCreationError,
     _read_settings_file,
+    autoclaude_subprocess_env_overrides,
     ensure_autoclaude_user,
     is_root,
     read_default_permission_mode,
     reset_caches,
     share_claude_config,
+    share_claude_credentials,
     share_repo,
     should_bypass_permissions,
     wrap_for_user,
@@ -239,6 +241,63 @@ def test_share_claude_config_handles_missing_source(tmp_path: Path, monkeypatch:
     invoked: list[list[str]] = []
     monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
     share_claude_config(home=home)
+    assert invoked == []
+
+
+def test_share_claude_credentials_chgrps_and_chmods(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    creds = home / ".claude" / claude_env.CREDENTIALS_FILENAME
+    creds.parent.mkdir(parents=True)
+    creds.write_text("{}", encoding="utf-8")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+
+    share_claude_credentials(home=home)
+
+    assert invoked == [
+        ["chgrp", claude_env.AUTOCLAUDE_GROUP, str(creds)],
+        ["chmod", "g+r", str(creds)],
+    ]
+
+
+def test_share_claude_credentials_runs_every_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    creds = home / ".claude" / claude_env.CREDENTIALS_FILENAME
+    creds.parent.mkdir(parents=True)
+    creds.write_text("{}", encoding="utf-8")
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+
+    share_claude_credentials(home=home)
+    first = len(invoked)
+    share_claude_credentials(home=home)
+
+    assert len(invoked) == 2 * first, "share_claude_credentials must NOT be cached: claude rewrites the file"
+
+
+def test_autoclaude_subprocess_env_overrides_uses_pwd_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", lambda _u: _FakePwEntry(Path("/home/autoclaude")))
+    overrides = autoclaude_subprocess_env_overrides()
+    assert overrides == {"HOME": "/home/autoclaude"}
+
+
+def test_autoclaude_subprocess_env_overrides_falls_back_when_user_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _missing(_u: str) -> object:
+        raise KeyError("autoclaude")
+
+    monkeypatch.setattr(claude_env.pwd, "getpwnam", _missing)
+    overrides = autoclaude_subprocess_env_overrides(username="autoclaude")
+    assert overrides == {"HOME": "/home/autoclaude"}
+
+
+def test_share_claude_credentials_no_op_when_file_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    (home / ".claude").mkdir(parents=True)
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+
+    share_claude_credentials(home=home)
+
     assert invoked == []
 
 

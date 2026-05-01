@@ -35,10 +35,17 @@ AUTOCLAUDE_USER: Final[str] = "autoclaude"
 AUTOCLAUDE_GROUP: Final[str] = "autoclaude"
 ISSUE_URL: Final[str] = "https://github.com/grezy-software/autoclaude-cli/issues"
 
+# claude rotates this file (refresh tokens, etc.) and writes it back with
+# mode 0600 owned by root:root, which silently breaks the autoclaude user's
+# read access. We re-grant group read perms before every tick — see
+# :func:`share_claude_credentials`.
+CREDENTIALS_FILENAME: Final[str] = ".credentials.json"
+
 # Per-process caches: avoid repeating expensive filesystem walks every tick.
 _shared_repos: set[str] = set()
 _shared_config: bool = False
 _shared_binary: bool = False
+_shared_gh_config: bool = False
 _traversal_granted: set[str] = set()
 _logged_modes: set[str] = set()
 
@@ -319,6 +326,75 @@ def share_claude_config(
     _shared_config = True
 
 
+def share_claude_credentials(*, group: str = AUTOCLAUDE_GROUP, home: Path | None = None) -> None:
+    """Re-grant ``group`` read access to ``~/.claude/.credentials.json``.
+
+    Claude rotates the credentials file (refresh tokens, OAuth flow, login)
+    and writes it back as ``mode 0600`` owned by ``root:root``, silently
+    erasing the group permissions ``share_claude_config`` set up at startup.
+    The next tick that runs as the ``autoclaude`` user then exits with
+    ``Not logged in`` -- and worse, in ``--output-format stream-json``
+    mode it produces no output at all.
+
+    Unlike ``share_claude_config``, this helper is **not** cached: it must
+    re-apply on every tick because claude can rewrite the file at any time.
+    The cost is a single ``chgrp`` + ``chmod`` on one small file, well below
+    the noise floor of a tick.
+    """
+    home = home if home is not None else Path.home()
+    creds = home / ".claude" / CREDENTIALS_FILENAME
+    if not creds.exists():
+        return
+    _run_cmd(["chgrp", group, str(creds)])
+    _run_cmd(["chmod", "g+r", str(creds)])
+
+
+def share_gh_config(
+    *,
+    username: str = AUTOCLAUDE_USER,
+    group: str = AUTOCLAUDE_GROUP,
+    home: Path | None = None,
+) -> None:
+    """Symlink ``~<username>/.config/gh`` -> root's ``.config/gh`` and grant group access.
+
+    The autoclaude-wrapped claude inherits ``HOME=/home/autoclaude``, so any
+    ``gh`` invocation inside an agent step looks up its config under
+    ``/home/autoclaude/.config/gh/`` and reports "not logged in" even though
+    the operator authenticated ``gh`` as root before launching autoclaude.
+    Mirrors :func:`share_claude_config`: chgrp the source dir to the shared
+    group, grant ancestor traversal, then expose it to the autoclaude user via
+    a symlink. Cached per process.
+    """
+    global _shared_gh_config  # noqa: PLW0603
+    if _shared_gh_config:
+        return
+    home = home if home is not None else Path.home()
+    src = home / ".config" / "gh"
+    if not src.exists():
+        _shared_gh_config = True
+        return
+    _run_cmd(["chgrp", "-R", group, str(src)])
+    _run_cmd(["chmod", "-R", "g+rwX", str(src)])
+    _grant_path_traversal(src, group=group)
+    try:
+        target_home = Path(pwd.getpwnam(username).pw_dir)
+    except KeyError:
+        _shared_gh_config = True
+        return
+    target_config = target_home / ".config"
+    target = target_config / "gh"
+    if not target.exists() and not target.is_symlink():
+        try:
+            target_config.mkdir(parents=True, exist_ok=True)
+            _run_cmd(["chown", f"{username}:{group}", str(target_config)])
+            target.symlink_to(src, target_is_directory=True)
+            _run_cmd(["chown", "-h", f"{username}:{group}", str(target)])
+            _log.info("symlinked %s -> %s", target, src)
+        except OSError as exc:
+            _log.warning("failed to symlink gh config to %s: %s", target, exc)
+    _shared_gh_config = True
+
+
 def share_repo(cwd: Path, *, group: str = AUTOCLAUDE_GROUP) -> None:
     """Grant the ``autoclaude`` group rwX on the repo working directory.
 
@@ -360,6 +436,31 @@ def share_claude_binary(*, group: str = AUTOCLAUDE_GROUP) -> None:
     if target_path != link_path:
         _grant_path_traversal(target_path, group=group)
     _shared_binary = True
+
+
+def autoclaude_subprocess_env_overrides(*, username: str = AUTOCLAUDE_USER) -> dict[str, str]:
+    """Env vars that must override the parent's when wrapping with ``runuser``.
+
+    ``runuser --preserve-environment`` keeps the *parent*'s env, including
+    ``HOME=/root``. Claude resolves session/IPC/lock paths from ``$HOME/.claude``,
+    so under that env the autoclaude-wrapped claude reads and locks the same
+    files the parent claude (running as root) is already holding open --
+    deadlocking in ``do_epoll_wait`` with no output. Forcing ``HOME`` to the
+    autoclaude user's actual home directory resolves the symlink
+    ``/home/autoclaude/.claude -> /root/.claude`` for credentials/config (single
+    source of truth) while giving the new claude its own session/memory paths
+    (``/home/autoclaude/.claude/projects/...``) that don't collide with the
+    parent.
+
+    Falls back to ``/home/<username>`` if the user isn't in ``pwd``; the runner
+    bails out earlier in that case (``autoclaude_user_exists`` guard), so this
+    is just defensive.
+    """
+    try:
+        home = pwd.getpwnam(username).pw_dir
+    except KeyError:
+        home = f"/home/{username}"
+    return {"HOME": home}
 
 
 def wrap_for_user(argv: list[str], *, username: str = AUTOCLAUDE_USER) -> list[str]:
@@ -453,6 +554,7 @@ def reset_caches() -> None:
     _shared_repos.clear()
     _logged_modes.clear()
     _traversal_granted.clear()
-    global _shared_config, _shared_binary  # noqa: PLW0603
+    global _shared_config, _shared_binary, _shared_gh_config  # noqa: PLW0603
     _shared_config = False
     _shared_binary = False
+    _shared_gh_config = False

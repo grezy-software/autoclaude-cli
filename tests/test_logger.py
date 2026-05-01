@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import logging
+import time
+from pathlib import Path
+
+import pytest
 
 from autoclaude import logger as autoclaude_logger
 
@@ -72,6 +76,81 @@ def test_file_formatter_renders_local_time_not_utc() -> None:
         f"timezone offset {expected_offset!r}; the formatter is likely using "
         f"gmtime (UTC) instead of localtime."
     )
+
+
+def test_streams_dir_is_under_log_dir() -> None:
+    """Verify the streams directory lives next to autoclaude.log.
+
+    A single archive setting (XDG_CONFIG_HOME) must cover both.
+    """
+    assert autoclaude_logger.streams_dir() == autoclaude_logger.log_dir() / "streams"
+
+
+def test_allocate_stream_log_path_creates_dir_and_returns_unique_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify path is unique per call and the directory is auto-created.
+
+    The path is allocated under streams_dir; back-to-back calls (>=1s apart)
+    return distinct paths because the filename embeds the timestamp.
+    """
+    monkeypatch.setattr(autoclaude_logger, "log_dir", lambda: tmp_path / "logs")
+
+    p1 = autoclaude_logger.allocate_stream_log_path(step_id=1)
+    assert p1.parent == tmp_path / "logs" / "streams"
+    assert p1.parent.is_dir()
+    assert "step-1" in p1.name
+    assert p1.name.startswith("claude-stream-")
+
+    # Sleep one second so the second-resolution timestamp moves; otherwise the
+    # test asserts a property that the implementation does not guarantee
+    # (sub-second uniqueness). One file per second is more than enough for the
+    # production use case (one per tick).
+    time.sleep(1)
+    p2 = autoclaude_logger.allocate_stream_log_path(step_id=2)
+    assert p2 != p1
+
+
+def test_allocate_stream_log_path_prunes_to_backup_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After enough allocations, only ``STREAMS_BACKUP_COUNT`` files remain.
+
+    Mirrors the production loop: caller writes to each path, then the next
+    allocation prunes the oldest. We simulate it directly to keep the test fast.
+    """
+    monkeypatch.setattr(autoclaude_logger, "log_dir", lambda: tmp_path / "logs")
+    streams = tmp_path / "logs" / "streams"
+    streams.mkdir(parents=True)
+
+    keep = autoclaude_logger.STREAMS_BACKUP_COUNT
+    # Drop ``keep + 3`` pre-existing files with strictly increasing mtimes so
+    # the prune order is deterministic.
+    for i in range(keep + 3):
+        f = streams / f"claude-stream-old-{i:02d}.log"
+        f.write_text(f"old #{i}\n")
+        # Force mtime spread so sort-by-mtime is well-defined.
+        ts = 1_700_000_000 + i
+        os_path = str(f)
+        import os  # noqa: PLC0415
+
+        os.utime(os_path, (ts, ts))
+
+    # Allocating a new path leaves room for the new file: at most ``keep - 1``
+    # pre-existing files survive.
+    new_path = autoclaude_logger.allocate_stream_log_path(step_id=99)
+    new_path.write_text("new\n")  # actually create it so the count check is correct
+
+    remaining = sorted(streams.glob("claude-stream-*.log"))
+    assert len(remaining) == keep, (
+        f"expected {keep} files after allocation+write; got {len(remaining)}: "
+        f"{[p.name for p in remaining]}"
+    )
+    # The newest pre-existing files are kept; the oldest ones are pruned.
+    kept_names = {p.name for p in remaining}
+    assert new_path.name in kept_names
+    # The oldest pre-existing one (-00) must have been pruned.
+    assert "claude-stream-old-00.log" not in kept_names
 
 
 def test_console_handler_stays_at_info_or_above() -> None:

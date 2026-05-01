@@ -248,7 +248,7 @@ def test_run_step_flags_is_error(tmp_path, monkeypatch) -> None:
 
 def test_build_argv_includes_bypass_when_no_default_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
-    argv = _build_claude_argv("hi", cwd=tmp_path)
+    argv, _env = _build_claude_argv("hi", cwd=tmp_path)
     assert "--permission-mode" in argv
     idx = argv.index("--permission-mode")
     assert argv[idx + 1] == "bypassPermissions"
@@ -257,7 +257,7 @@ def test_build_argv_includes_bypass_when_no_default_mode(tmp_path: Path, monkeyp
 
 def test_build_argv_omits_bypass_when_auto_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
-    argv = _build_claude_argv("hi", cwd=tmp_path)
+    argv, _env = _build_claude_argv("hi", cwd=tmp_path)
     assert "--permission-mode" not in argv
     assert argv[0] == "claude"
 
@@ -268,6 +268,12 @@ def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
     monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: True)
     monkeypatch.setattr(claude_env, "share_repo", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_claude_credentials", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        claude_env,
+        "autoclaude_subprocess_env_overrides",
+        lambda *_a, **_kw: {"HOME": "/home/autoclaude"},
+    )
     monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
 
     # Install-time helpers must NOT run during a tick. Wire raisers as guards.
@@ -278,10 +284,20 @@ def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
 
-    argv = _build_claude_argv("hi", cwd=tmp_path)
+    argv, env_overrides = _build_claude_argv("hi", cwd=tmp_path)
     assert argv[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
     assert "claude" in argv
     assert "--permission-mode" in argv
+    # HOME must override the parent's, otherwise the wrapped claude locks the
+    # same session files as the root parent and hangs in epoll_wait.
+    assert env_overrides == {"HOME": "/home/autoclaude"}
+
+
+def test_build_argv_returns_empty_env_when_not_wrapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto mode (no wrap) must NOT inject HOME -- only the autoclaude branch needs that."""
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+    _argv, env_overrides = _build_claude_argv("hi", cwd=tmp_path)
+    assert env_overrides == {}
 
 
 def test_build_argv_raises_when_autoclaude_user_missing(
@@ -322,7 +338,7 @@ def test_build_argv_does_not_wrap_when_root_in_auto_mode(
     monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
 
-    argv = _build_claude_argv("hi", cwd=tmp_path)
+    argv, _env = _build_claude_argv("hi", cwd=tmp_path)
     assert argv[0] == "claude"
     assert "runuser" not in argv
     assert "sudo" not in argv
@@ -485,6 +501,111 @@ def test_run_step_default_idle_timeout_kills_pre_init_hang(
     assert result.duration_ms < 5_000
     assert result.ok is False
     assert "stdout idle" in result.stderr
+
+
+def test_run_step_archives_subprocess_streams_to_log_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The raw stdout and stderr of the claude subprocess must be archived
+    to a per-step file under ``logs/streams`` so an operator can replay
+    exactly what the child wrote, with timestamps and stream tags.
+    """  # noqa: D205
+    # Redirect logs to tmp via XDG.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Force config_dir to re-evaluate (it caches based on env).
+    from autoclaude import config, logger  # noqa: PLC0415
+
+    monkeypatch.setattr(config, "config_dir", lambda: tmp_path / "xdg" / "autoclaude")
+    monkeypatch.setattr(logger, "log_dir", lambda: tmp_path / "xdg" / "autoclaude" / "logs")
+
+    _write_fake_claude_script(
+        tmp_path,
+        monkeypatch,
+        body=(
+            "sys.stderr.write('warmup\\n')\n"
+            "sys.stdout.write(json.dumps({"
+            "'type':'system','subtype':'init','session_id':'sess-archive','model':'opus'"
+            "}) + '\\n')\n"
+            "sys.stdout.write(json.dumps({"
+            "'type':'result','is_error':False,"
+            "'session_id':'sess-archive','total_cost_usd':0.01,'result':'ok'"
+            "}) + '\\n')\n"
+        ),
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    result = run_step("anything", cwd=cwd, step_id=42)
+    assert result.ok is True
+
+    streams = logger.streams_dir()
+    archives = sorted(streams.glob("claude-stream-*-step-42.log"))
+    assert len(archives) == 1, f"expected one archive, got {len(archives)}"
+    body = archives[0].read_text(encoding="utf-8")
+    # Header recorded so the file is self-describing.
+    assert "step_id: 42" in body
+    assert "argv:" in body
+    # Both streams archived with their tag.
+    assert "stdout: " in body
+    assert "stderr: " in body
+    # Substantive payload preserved verbatim.
+    assert '"type": "system"' in body or "'type': 'system'" in body or "type" in body
+    assert "warmup" in body
+    assert "sess-archive" in body
+
+
+def test_run_step_stream_archive_rotates_to_at_most_five(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six successive run_step invocations leave at most STREAMS_BACKUP_COUNT
+    files in the streams directory, with the newest ones kept.
+    """  # noqa: D205
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    from autoclaude import config, logger  # noqa: PLC0415
+
+    monkeypatch.setattr(config, "config_dir", lambda: tmp_path / "xdg" / "autoclaude")
+    monkeypatch.setattr(logger, "log_dir", lambda: tmp_path / "xdg" / "autoclaude" / "logs")
+
+    _write_fake_claude_emitting(
+        {
+            "type": "result",
+            "is_error": False,
+            "session_id": "rot",
+            "total_cost_usd": 0.0,
+            "result": "ok",
+        },
+        tmp_path,
+        monkeypatch,
+    )
+    cwd = tmp_path / "repo"
+    cwd.mkdir()
+
+    # Pre-seed older files at distinct mtimes so rotation is deterministic.
+    streams = logger.streams_dir()
+    streams.mkdir(parents=True, exist_ok=True)
+    import os  # noqa: PLC0415
+
+    for i in range(6):
+        f = streams / f"claude-stream-pre-{i:02d}.log"
+        f.write_text(f"pre #{i}\n")
+        ts = 1_700_000_000 + i
+        os.utime(str(f), (ts, ts))
+
+    result = run_step("anything", cwd=cwd, step_id=7)
+    assert result.ok is True
+
+    files = sorted(streams.glob("claude-stream-*.log"))
+    assert len(files) == logger.STREAMS_BACKUP_COUNT, (
+        f"expected exactly {logger.STREAMS_BACKUP_COUNT} files after rotation; "
+        f"got {len(files)}: {[p.name for p in files]}"
+    )
+    # The brand-new step-7 archive must be present.
+    names = {p.name for p in files}
+    assert any("step-7" in n for n in names), f"new archive missing: {names}"
+    # The oldest pre-seeded file must have been pruned.
+    assert "claude-stream-pre-00.log" not in names
 
 
 def test_run_step_natural_exit_unaffected_by_watchdog(
