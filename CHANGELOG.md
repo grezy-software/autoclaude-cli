@@ -1,3 +1,10 @@
+## [2.5.12](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.11...v2.5.12) (2026-05-01)
+
+
+### Bug Fixes
+
+* **runuser:** fix runuser command on hang problem ([620e34e](https://github.com/grezy-software/autoclaude-cli/commit/620e34efa236c2783c308df14cba46223a31e590))
+
 ## [2.5.11](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.10...v2.5.11) (2026-04-30)
 
 
