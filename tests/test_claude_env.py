@@ -20,6 +20,7 @@ from autoclaude.claude_env import (
     share_claude_config,
     share_claude_credentials,
     share_repo,
+    share_workspace_home,
     should_bypass_permissions,
     wrap_for_user,
 )
@@ -331,6 +332,59 @@ def test_share_gh_config_no_op_when_dir_missing(tmp_path: Path, monkeypatch: pyt
     assert invoked == []
 
 
+def test_share_workspace_home_chgrps_chmods_and_setgids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda *_a, **_kw: None)
+
+    share_workspace_home(home=home)
+
+    workspace = home / ".autoclaude"
+    assert workspace.exists()
+    assert workspace.is_dir()
+    assert ["chgrp", "-R", claude_env.AUTOCLAUDE_GROUP, str(workspace)] in invoked
+    assert ["chmod", "-R", "g+rwX", str(workspace)] in invoked
+    assert [
+        "find",
+        str(workspace),
+        "-type",
+        "d",
+        "-exec",
+        "chmod",
+        "g+s",
+        "{}",
+        "+",
+    ] in invoked
+
+
+def test_share_workspace_home_creates_dir_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The setgid bit must be applied *before* any clone lands in the workspace."""
+    home = tmp_path / "root"
+    home.mkdir()
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda *_a, **_kw: True)
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda *_a, **_kw: None)
+
+    workspace = home / ".autoclaude"
+    assert not workspace.exists()
+    share_workspace_home(home=home)
+    assert workspace.is_dir()
+
+
+def test_share_workspace_home_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "root"
+    home.mkdir()
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(claude_env, "_run_cmd", lambda argv, **_kw: invoked.append(argv) or True)
+    monkeypatch.setattr(claude_env, "_grant_path_traversal", lambda *_a, **_kw: None)
+
+    share_workspace_home(home=home)
+    first = len(invoked)
+    share_workspace_home(home=home)
+    assert len(invoked) == first, "share_workspace_home must be cached per-process"
+
+
 def test_share_per_tick_for_autoclaude_user_calls_per_tick_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """The per-tick entry point must call credentials + gh + repo, never install-time helpers."""
     calls: list[str] = []
@@ -343,6 +397,7 @@ def test_share_per_tick_for_autoclaude_user_calls_per_tick_helpers(monkeypatch: 
 
     monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_workspace_home", _must_not_run)
 
     claude_env.share_per_tick_for_autoclaude_user(cwd=Path("/tmp/repo"))
     assert calls == ["creds", "gh", "repo"]

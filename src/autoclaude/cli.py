@@ -14,7 +14,7 @@ from typing import Annotated
 
 import typer
 
-from autoclaude import __version__, claude_env, repo_config
+from autoclaude import __version__, claude_env, creds_watcher, repo_config
 from autoclaude.api_client import ApiClient, ApiError
 from autoclaude.config import DEFAULT_URL, Config, Profile
 from autoclaude.daemon import DEFAULT_INTERVAL_SECONDS as DAEMON_DEFAULT_INTERVAL
@@ -232,9 +232,7 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
     _log.info("log_file: %s", log_file_path(), extra={"source": "cli"})
     streams_path = streams_dir()
-    streams_count = (
-        sum(1 for _ in streams_path.glob("claude-stream-*.log")) if streams_path.exists() else 0
-    )
+    streams_count = sum(1 for _ in streams_path.glob("claude-stream-*.log")) if streams_path.exists() else 0
     _log.info(
         "streams_dir: %s (%d archived)",
         streams_path,
@@ -285,6 +283,8 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
             extra={"source": "cli"},
         )
 
+    _report_creds_watcher_state(autoclaude_required=bool(runtime["autoclaude_user_required"]))
+
     try:
         with ApiClient(prof, cli_version=__version__) as client:
             api_ctx = client.context()
@@ -306,6 +306,65 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
         owner.get("email") or owner.get("username") or "?",
         extra={"source": "cli"},
     )
+
+
+def _install_creds_watcher_during_init() -> None:
+    """Install the credentials watcher and surface a single status line.
+
+    Extracted from :func:`_provision_autoclaude_runtime` to keep the parent
+    function's branch count below the linter threshold; both call sites
+    expect the same logging shape.
+    """
+    try:
+        watcher = creds_watcher.install_watcher()
+    except creds_watcher.CredsWatcherError as exc:
+        _log.warning(
+            "[yellow]credentials watcher install failed[/yellow]: %s. "
+            "Re-run `autoclaude init --user-autoclaude` once the cause is fixed.",
+            exc,
+            extra={"source": "cli"},
+        )
+        return
+    if watcher.action == "installed":
+        _log.info(
+            "[green]credentials watcher installed[/green] (%s)",
+            watcher.detail,
+            extra={"source": "cli"},
+        )
+    elif watcher.action == "skipped":
+        _log.info(
+            "[dim]credentials watcher skipped[/dim]: %s",
+            watcher.detail,
+            extra={"source": "cli"},
+        )
+
+
+def _report_creds_watcher_state(*, autoclaude_required: bool) -> None:
+    """Print the creds-watcher status line in ``diag`` output.
+
+    The watcher only matters when claude is running under the autoclaude
+    user (root + bypassPermissions on Linux). On other configurations the
+    line is suppressed to avoid noise.
+    """
+    status = creds_watcher.watcher_status()
+    if status == "unsupported":
+        return
+    if status == "active":
+        _log.info("creds watcher: [green]active[/green]", extra={"source": "cli"})
+        return
+    if status == "not_installed":
+        if autoclaude_required:
+            _log.warning(
+                "creds watcher: [yellow]not installed[/yellow] -- run `autoclaude init --user-autoclaude` to install it",
+                extra={"source": "cli"},
+            )
+        else:
+            _log.info(
+                "creds watcher: [dim]not installed (not required: claude does not run as the autoclaude user)[/dim]",
+                extra={"source": "cli"},
+            )
+        return
+    _log.warning("creds watcher: [yellow]%s[/yellow]", status, extra={"source": "cli"})
 
 
 def _report_protocol_state(client: ApiClient) -> None:
@@ -681,14 +740,17 @@ def _provision_autoclaude_runtime(*, cwd: Path, force: bool, interactive: bool) 
         claude_env.share_claude_config()
         claude_env.share_claude_binary()
         claude_env.share_gh_config()
+        claude_env.share_workspace_home()
     except claude_env.UserCreationError as exc:
         _log.error("[red]permission setup failed[/red]: %s", exc, extra={"source": "cli"})
         return
     _log.info(
-        "[green]claude config, gh config and binary path permissions granted to the '%s' group[/green]",
+        "[green]claude config, gh config, binary path and workspace home permissions granted to the '%s' group[/green]",
         claude_env.AUTOCLAUDE_GROUP,
         extra={"source": "cli"},
     )
+
+    _install_creds_watcher_during_init()
 
 
 @app.command()
@@ -922,7 +984,7 @@ def restart() -> None:
 
 @app.command(name="uninstall-services")
 def uninstall_services() -> None:
-    """Remove heartbeat + scheduler services."""
+    """Remove heartbeat + scheduler services and the credentials watcher."""
     try:
         results = uninstall_all()
     except ServiceInstallError as exc:
@@ -930,6 +992,21 @@ def uninstall_services() -> None:
         raise typer.Exit(code=1) from exc
     for result in results:
         _log.info("[green]removed[/green] (%s)", result.detail, extra={"source": "cli"})
+    try:
+        watcher = creds_watcher.uninstall_watcher()
+    except creds_watcher.CredsWatcherError as exc:
+        _log.warning(
+            "[yellow]credentials watcher uninstall failed[/yellow]: %s",
+            exc,
+            extra={"source": "cli"},
+        )
+    else:
+        if watcher.action == "uninstalled":
+            _log.info(
+                "[green]credentials watcher removed[/green] (%s)",
+                watcher.detail,
+                extra={"source": "cli"},
+            )
 
 
 @app.command()
@@ -1112,7 +1189,7 @@ def task_create(
 
 @app.command()
 def services(ctx: typer.Context, profile: ProfileOption = None) -> None:
-    """Print platform service status for heartbeat + scheduler."""
+    """Print platform service status for heartbeat, scheduler, and creds watcher."""
     _load(ctx, profile)
     try:
         heartbeat = status_service("heartbeat")
@@ -1122,6 +1199,9 @@ def services(ctx: typer.Context, profile: ProfileOption = None) -> None:
         raise typer.Exit(code=1) from exc
     _log.info("heartbeat (%s): %s", heartbeat.platform, heartbeat.detail, extra={"source": "cli"})
     _log.info("scheduler (%s): %s", sched.platform, sched.detail, extra={"source": "cli"})
+    watcher_state = creds_watcher.watcher_status()
+    if watcher_state != "unsupported":
+        _log.info("creds watcher: %s", watcher_state, extra={"source": "cli"})
 
 
 if __name__ == "__main__":

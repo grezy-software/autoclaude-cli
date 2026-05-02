@@ -46,6 +46,7 @@ _shared_repos: set[str] = set()
 _shared_config: bool = False
 _shared_binary: bool = False
 _shared_gh_config: bool = False
+_shared_workspace_home: bool = False
 _traversal_granted: set[str] = set()
 _logged_modes: set[str] = set()
 
@@ -55,10 +56,7 @@ class UserCreationError(RuntimeError):
 
 
 def _remediation(detail: str) -> str:
-    return (
-        f"{detail} Please open an issue at {ISSUE_URL} with your OS / container "
-        "details so we can add support."
-    )
+    return f"{detail} Please open an issue at {ISSUE_URL} with your OS / container details so we can add support."
 
 
 def _read_settings_file(path: Path) -> dict:
@@ -395,6 +393,42 @@ def share_gh_config(
     _shared_gh_config = True
 
 
+def share_workspace_home(
+    *,
+    group: str = AUTOCLAUDE_GROUP,
+    home: Path | None = None,
+) -> None:
+    """Grant the ``autoclaude`` group rwX on ``~/.autoclaude`` with setgid inheritance.
+
+    The autoclaude workspace (``~/.autoclaude``, see ``workspace.workspace_home``)
+    holds per-project clones (``repos/<slug>/``) and per-tick worktrees
+    (``worktrees/<slug>/<tick_id>/``) created by the runner running as ``root``.
+    The autoclaude user must be able to traverse and operate on these paths once
+    ``runuser`` drops privileges.
+
+    Applies recursively:
+      - ``chgrp -R <group>`` on the whole tree
+      - ``chmod -R g+rwX`` so the group can read, write, and traverse
+      - ``chmod g+s`` on every directory (POSIX setgid) so newly created entries
+        inherit ``group=<group>`` automatically. setgid is only set on directories
+        because on regular files it has different semantics (run-as-group).
+
+    Creates the directory if missing so the setgid bit applies *before* any clone
+    or worktree lands there. Cached per-process; install-time only.
+    """
+    global _shared_workspace_home  # noqa: PLW0603
+    if _shared_workspace_home:
+        return
+    home = home if home is not None else Path.home()
+    workspace = home / ".autoclaude"
+    workspace.mkdir(parents=True, exist_ok=True)
+    _run_cmd(["chgrp", "-R", group, str(workspace)])
+    _run_cmd(["chmod", "-R", "g+rwX", str(workspace)])
+    _run_cmd(["find", str(workspace), "-type", "d", "-exec", "chmod", "g+s", "{}", "+"])
+    _grant_path_traversal(workspace, group=group)
+    _shared_workspace_home = True
+
+
 def share_repo(cwd: Path, *, group: str = AUTOCLAUDE_GROUP) -> None:
     """Grant the ``autoclaude`` group rwX on the repo working directory.
 
@@ -589,7 +623,8 @@ def reset_caches() -> None:
     _shared_repos.clear()
     _logged_modes.clear()
     _traversal_granted.clear()
-    global _shared_config, _shared_binary, _shared_gh_config  # noqa: PLW0603
+    global _shared_config, _shared_binary, _shared_gh_config, _shared_workspace_home  # noqa: PLW0603
     _shared_config = False
     _shared_binary = False
     _shared_gh_config = False
+    _shared_workspace_home = False

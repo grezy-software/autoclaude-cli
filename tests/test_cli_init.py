@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from autoclaude import claude_env, cli
+from autoclaude import claude_env, cli, creds_watcher
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +19,13 @@ def _no_share_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: stub the install-time chgrp helpers so they don't touch the host."""
     monkeypatch.setattr(claude_env, "share_claude_config", lambda *_a, **_kw: None)
     monkeypatch.setattr(claude_env, "share_claude_binary", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_gh_config", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_workspace_home", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        creds_watcher,
+        "install_watcher",
+        lambda *_a, **_kw: creds_watcher.WatcherInstallResult(action="skipped", detail="stubbed"),
+    )
 
 
 def test_provision_skipped_when_not_root(
@@ -73,10 +80,20 @@ def test_provision_skips_creation_when_user_exists_but_still_grants_perms(
     share_calls: list[str] = []
     monkeypatch.setattr(claude_env, "share_claude_config", lambda *_a, **_kw: share_calls.append("config"))
     monkeypatch.setattr(claude_env, "share_claude_binary", lambda *_a, **_kw: share_calls.append("binary"))
+    monkeypatch.setattr(claude_env, "share_gh_config", lambda *_a, **_kw: share_calls.append("gh"))
+    monkeypatch.setattr(claude_env, "share_workspace_home", lambda *_a, **_kw: share_calls.append("workspace"))
+    watcher_calls: list[str] = []
+
+    def _record_watcher_install(*_a: object, **_kw: object) -> creds_watcher.WatcherInstallResult:
+        watcher_calls.append("install")
+        return creds_watcher.WatcherInstallResult(action="installed", detail="stub.service")
+
+    monkeypatch.setattr(creds_watcher, "install_watcher", _record_watcher_install)
 
     cli._provision_autoclaude_runtime(cwd=tmp_path, force=False, interactive=True)  # noqa: SLF001
     assert created == []
-    assert share_calls == ["config", "binary"]
+    assert share_calls == ["config", "binary", "gh", "workspace"]
+    assert watcher_calls == ["install"]
 
 
 def test_provision_prompts_and_creates_when_confirmed(

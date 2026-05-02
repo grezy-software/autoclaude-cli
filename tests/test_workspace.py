@@ -13,9 +13,20 @@ from autoclaude.workspace import (
     Workspace,
     WorkspaceError,
     _canonical_github_clone_url,
+    _register_safe_directory,
     derive_slug,
     workspace_home,
 )
+
+# Bind the real implementation at import time so the focused unit tests can
+# still exercise it after the autouse fixture below stubs ``wsmod`` to a no-op.
+_real_register_safe_directory = _register_safe_directory
+
+
+@pytest.fixture(autouse=True)
+def _stub_safe_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid polluting the developer's global gitconfig during create_worktree tests."""
+    monkeypatch.setattr(wsmod, "_register_safe_directory", lambda _p: None)
 
 
 def _git(args: list[str], cwd: Path) -> None:
@@ -225,6 +236,58 @@ def test_remove_worktree_keeps_branch(tmp_path) -> None:
         check=True,
     )
     assert worktree.branch in branches.stdout
+
+
+def test_create_worktree_registers_safe_directory(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``create_worktree`` must hand the new path to ``_register_safe_directory``."""
+    registered: list[Path] = []
+    monkeypatch.setattr(wsmod, "_register_safe_directory", registered.append)
+
+    source = _make_source_repo(tmp_path / "src")
+    workspace = Workspace.for_local_path(source, home=tmp_path / "home")
+    workspace.sync()
+    worktree = workspace.create_worktree(13)
+
+    assert registered == [worktree.path]
+
+
+class _FakeCompleted:
+    returncode = 0
+
+
+def test_register_safe_directory_invokes_git_config_globally_and_via_runuser(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(wsmod.subprocess, "run", lambda argv, **_kw: invoked.append(argv) or _FakeCompleted())
+    monkeypatch.setattr(wsmod.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+
+    target = tmp_path / "wt"
+    abs_target = str(target.absolute())
+    _real_register_safe_directory(target)
+
+    assert ["git", "config", "--global", "--add", "safe.directory", abs_target] in invoked
+    assert [
+        "runuser",
+        "-u",
+        "autoclaude",
+        "--",
+        "git",
+        "config",
+        "--global",
+        "--add",
+        "safe.directory",
+        abs_target,
+    ] in invoked
+
+
+def test_register_safe_directory_skips_runuser_when_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(wsmod.subprocess, "run", lambda argv, **_kw: invoked.append(argv) or _FakeCompleted())
+    monkeypatch.setattr(wsmod.shutil, "which", lambda _name: None)
+
+    _real_register_safe_directory(tmp_path / "wt")
+
+    assert all(c[0] != "runuser" for c in invoked)
+    assert any(c[:3] == ["git", "config", "--global"] for c in invoked)
 
 
 _CANONICAL_URL = "https://github.com/soaria-app/soaria.git"

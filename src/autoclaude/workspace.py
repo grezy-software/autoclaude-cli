@@ -229,6 +229,7 @@ class Workspace:
             ["worktree", "add", "-b", branch, str(target), base],
             cwd=self.clone_path,
         )
+        _register_safe_directory(target)
         _log.info("worktree %s on %s", target, branch, extra={"source": "workspace"})
         return Worktree(path=target, branch=branch)
 
@@ -409,6 +410,34 @@ def _gh_credential_helper_args() -> list[str]:
         "-c",
         "credential.helper=!gh auth git-credential",
     ]
+
+
+def _register_safe_directory(path: Path) -> None:
+    """Mark ``path`` as a safe directory in git's global config.
+
+    Without this, git refuses to operate on a checkout whose ``.git``
+    ownership does not match the calling user (the "dubious ownership"
+    check, ``CVE-2022-24765``). Autoclaude worktrees are created by
+    ``root`` but accessed by the dedicated ``autoclaude`` user via the
+    shared ``autoclaude`` group; that ownership mismatch fires the check
+    on every git invocation made by claude.
+
+    Registers the path in the running user's gitconfig and, when
+    ``runuser`` is available, in the ``autoclaude`` user's gitconfig too
+    so the unprivileged claude can run git inside the worktree without
+    being blocked. Failures are swallowed: a missing ``git``, ``runuser``,
+    or autoclaude user only means the safety net cannot be installed,
+    never that worktree creation should fail.
+    """
+    abs_path = str(path.absolute())
+    cmd = ["git", "config", "--global", "--add", "safe.directory", abs_path]
+    subprocess.run(cmd, check=False, capture_output=True)
+    if shutil.which("runuser"):
+        subprocess.run(
+            ["runuser", "-u", "autoclaude", "--", *cmd],
+            check=False,
+            capture_output=True,
+        )
 
 
 def _git(args: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
