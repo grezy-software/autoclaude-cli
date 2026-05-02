@@ -1,3 +1,10 @@
+## [2.6.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.0...v2.6.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **autoclaude:** fix sync of claude auth ([e1aa0f7](https://github.com/grezy-software/autoclaude-cli/commit/e1aa0f71d2e7f5c003b9dbd80cd2722525ba95ae))
+
 # [2.6.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.13...v2.6.0) (2026-05-01)
 
 
