@@ -1,3 +1,11 @@
+## [2.6.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.2...v2.6.3) (2026-05-04)
+
+
+### Bug Fixes
+
+* **autoclaude:** Add watch for claude permission aligment ([39cee42](https://github.com/grezy-software/autoclaude-cli/commit/39cee42ff48f770195322c64685c0523d5e6e21c))
+* **summary:** short summary max lenght from 240 chars to 500 chars ([d7dea83](https://github.com/grezy-software/autoclaude-cli/commit/d7dea831be8a7c2f0aad6066aa031401489208b5))
+
 ## [2.6.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.1...v2.6.2) (2026-05-04)
 
 
