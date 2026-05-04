@@ -503,6 +503,9 @@ def _execute_steps(  # noqa: PLR0911
     return ordinal
 
 
+_FRONTMATTER_RE = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+
+
 def _resolve_tool_command(storage: RepoStorage, slug: str) -> str:
     """Return the slash command name to invoke for ``slug``.
 
@@ -523,12 +526,59 @@ def _resolve_tool_command(storage: RepoStorage, slug: str) -> str:
     return slug
 
 
-def _build_tool_prompt(*, command: str, agent_slug: str, summary: str, stdout: str) -> str:
-    """Wrap a slash command with the parent agent step's summary + stdout."""
+def _resolve_tool_command_body(storage: RepoStorage, slug: str) -> str | None:
+    """Return the first command body (frontmatter stripped) for ``slug``.
+
+    Inlining the body avoids relying on ``claude -p`` to expand a slash
+    command: in headless mode the harness passes ``/foo`` through as raw
+    text and the model refuses to invoke an unrecognised skill, so the
+    tool step silently no-ops. Reading the manifest body off disk and
+    embedding it in the prompt makes the dispatch deterministic.
+    """
+    body = storage.read_tool_manifest(slug)
+    if not body:
+        return None
+    commands = body.get("commands") or []
+    if not isinstance(commands, list) or not commands:
+        return None
+    first = commands[0]
+    if not isinstance(first, dict):
+        return None
+    raw = first.get("body")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return _FRONTMATTER_RE.sub("", raw, count=1).strip()
+
+
+def _build_tool_prompt(
+    *,
+    command: str,
+    agent_slug: str,
+    summary: str,
+    stdout: str,
+    instructions: str | None = None,
+) -> str:
+    """Wrap a tool dispatch with the parent agent step's summary + stdout.
+
+    When ``instructions`` is provided, the command body is inlined so the
+    headless agent has actionable text instead of a bare ``/<command>``
+    reference (which ``claude -p`` does not expand).
+    """
     truncated = stdout
     if len(truncated) > _TOOL_STDOUT_MAX_CHARS:
         truncated = "[truncated]\n" + truncated[-_TOOL_STDOUT_MAX_CHARS:]
-    return f"/{command}\n\nPrevious step: {agent_slug}\nSummary: {summary or '(no summary)'}\n\n--- stdout ---\n{truncated}\n"
+    header = f"/{command}" if not instructions else f"Tool: /{command}"
+    body = instructions.strip() if instructions else ""
+    parts = [
+        header,
+        "",
+        f"Previous step: {agent_slug}",
+        f"Summary: {summary or '(no summary)'}",
+    ]
+    if body:
+        parts.extend(["", "--- instructions ---", body])
+    parts.extend(["", "--- stdout ---", truncated, ""])
+    return "\n".join(parts)
 
 
 def _run_tool_steps(
@@ -562,6 +612,14 @@ def _run_tool_steps(
         slug = str(ref["slug"])
         ordinal += 1
         command = _resolve_tool_command(storage, slug)
+        instructions = _resolve_tool_command_body(storage, slug)
+        if not instructions:
+            _log.warning(
+                "tool %s has no command body cached; skipping dispatch",
+                slug,
+                extra={"source": "cli"},
+            )
+            continue
         action = f"/{command}"
         try:
             opened = client.open_step(
@@ -586,6 +644,7 @@ def _run_tool_steps(
             agent_slug=agent_slug,
             summary=parent_result.summary,
             stdout=parent_result.stdout,
+            instructions=instructions,
         )
         storage.write_step_prompt(state.tick_id, tool_step_id, prompt)
         _log.info("[cyan]→[/cyan] tool %s", slug, extra={"source": "cli", "step_id": tool_step_id})

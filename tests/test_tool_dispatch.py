@@ -14,10 +14,18 @@ from autoclaude.runner import (
     STATUS_TOKEN_EXHAUSTED,
     _build_tool_prompt,
     _resolve_tool_command,
+    _resolve_tool_command_body,
     _run_tool_steps,
     _TickState,
 )
 from autoclaude.storage import RepoStorage
+
+_DISCORD_BODY = """---
+description: Post a message.
+---
+
+Run curl with $TOKEN.
+"""
 
 
 class _FakeClient:
@@ -84,13 +92,75 @@ def test_build_tool_prompt_truncates_long_stdout() -> None:
     assert "[truncated]" in prompt
 
 
-def test_run_tool_steps_dispatches_one_step_per_tool(
+def test_build_tool_prompt_inlines_instructions() -> None:
+    prompt = _build_tool_prompt(
+        command="discord-post",
+        agent_slug="issuer",
+        summary="ok",
+        stdout="hi",
+        instructions="Run curl with $TOKEN.",
+    )
+    assert prompt.startswith("Tool: /discord-post")
+    assert "--- instructions ---" in prompt
+    assert "Run curl with $TOKEN." in prompt
+    assert "--- stdout ---" in prompt
+
+
+def test_resolve_tool_command_body_strips_frontmatter(storage: RepoStorage) -> None:
+    storage.write_tool_manifest(
+        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
+    )
+    body = _resolve_tool_command_body(storage, "discord")
+    assert body == "Run curl with $TOKEN."
+
+
+def test_resolve_tool_command_body_returns_none_without_manifest(storage: RepoStorage) -> None:
+    assert _resolve_tool_command_body(storage, "missing") is None
+
+
+def test_resolve_tool_command_body_returns_none_when_body_missing(storage: RepoStorage) -> None:
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post"}]})
+    assert _resolve_tool_command_body(storage, "discord") is None
+
+
+def test_run_tool_steps_skips_tool_with_no_body(
     monkeypatch: pytest.MonkeyPatch,
     storage: RepoStorage,
     state: _TickState,
     tmp_path: Path,
 ) -> None:
     storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post"}]})
+    calls = _install_run_step(monkeypatch, ClaudeResult(ok=True, stdout="x", stderr=""))
+    client = _FakeClient()
+
+    _run_tool_steps(
+        client,
+        state,
+        [{"slug": "discord"}],
+        repo_checkout=tmp_path,
+        shutdown_requested={"value": False},
+        storage=storage,
+        parent_step={"agent_slug": "issuer"},
+        parent_result=ClaudeResult(ok=True, stdout="ok", stderr="", summary="s"),
+        start_ordinal=0,
+    )
+
+    assert calls == []
+    assert client.opened == []
+
+
+def test_run_tool_steps_dispatches_one_step_per_tool(
+    monkeypatch: pytest.MonkeyPatch,
+    storage: RepoStorage,
+    state: _TickState,
+    tmp_path: Path,
+) -> None:
+    storage.write_tool_manifest(
+        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
+    )
+    storage.write_tool_manifest(
+        "blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]}
+    )
     _install_run_step(monkeypatch, ClaudeResult(ok=True, stdout="ok", stderr="", summary="posted"))
     client = _FakeClient()
     parent_step = {"agent_slug": "issuer", "agent_config_id": 7, "prompt": "first"}
@@ -125,6 +195,9 @@ def test_run_tool_steps_failure_is_non_fatal(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
+    storage.write_tool_manifest(
+        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
+    )
     _install_run_step(
         monkeypatch,
         ClaudeResult(ok=False, stdout="", stderr="boom", summary="", fail_reason=""),
@@ -155,6 +228,12 @@ def test_run_tool_steps_token_exhaustion_bubbles_up(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
+    storage.write_tool_manifest(
+        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
+    )
+    storage.write_tool_manifest(
+        "blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]}
+    )
     _install_run_step(
         monkeypatch,
         ClaudeResult(ok=False, stdout="", stderr="Credit balance is too low.", token_exhausted=True),
@@ -184,6 +263,9 @@ def test_run_tool_steps_skips_when_open_step_fails(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
+    storage.write_tool_manifest(
+        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
+    )
     calls = _install_run_step(monkeypatch, ClaudeResult(ok=True, stdout="x", stderr=""))
 
     class _BrokenClient(_FakeClient):

@@ -1,3 +1,17 @@
+## [2.6.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.1...v2.6.2) (2026-05-04)
+
+
+### Bug Fixes
+
+* **runner:** inline tool command body in dispatch prompt ([a660636](https://github.com/grezy-software/autoclaude-cli/commit/a660636dee52e1e46f09d5e1791f62e2be0549b0))
+
+## [2.6.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.0...v2.6.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **autoclaude:** fix sync of claude auth ([e1aa0f7](https://github.com/grezy-software/autoclaude-cli/commit/e1aa0f71d2e7f5c003b9dbd80cd2722525ba95ae))
+
 # [2.6.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.5.13...v2.6.0) (2026-05-01)
 
 
