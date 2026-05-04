@@ -1,3 +1,10 @@
+## [2.6.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.3...v2.6.4) (2026-05-04)
+
+
+### Bug Fixes
+
+* **uv:** regenerate uv.lock file ([7f044f3](https://github.com/grezy-software/autoclaude-cli/commit/7f044f39f3f41948e4a3dd3154ae927f4c115559))
+
 ## [2.6.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.2...v2.6.3) (2026-05-04)
 
 
