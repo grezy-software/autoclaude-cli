@@ -484,9 +484,11 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> tuple[list[str], dict[str, 
 
     - Drops ``--permission-mode bypassPermissions`` when ``defaultMode=auto`` is
       already configured (in user or project settings).
-    - When running as root, provisions the ``autoclaude`` user/group, shares the
-      claude config and repo, and wraps the argv to drop privileges via
-      ``runuser`` (or ``sudo`` fallback).
+    - When the dedicated ``autoclaude`` system user has been provisioned (by
+      ``autoclaude init`` or ``autoclaude init --user-autoclaude``) and we are
+      currently root, wraps the argv with ``runuser`` to drop privileges. If
+      the user does not exist we fall through to the current user; ``init``
+      owns the decision of when to provision it.
     """
     argv: list[str] = [
         "claude",
@@ -505,21 +507,14 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> tuple[list[str], dict[str, 
         claude_env.log_mode_once("[claude_env] permission_mode=bypassPermissions (no defaultMode=auto)")
     else:
         claude_env.log_mode_once("[claude_env] permission_mode=<unset> (defaultMode=auto detected)")
-    # claude only refuses root + bypassPermissions; in auto mode root is fine and
-    # we do not need to provision the autoclaude user / wrap with runuser.
-    if bypass and claude_env.is_root():
-        # Provisioning (user creation, ~/.claude chgrp, claude binary chgrp) is
-        # the responsibility of `autoclaude init` -- doing it mid-tick would slow
-        # the first step and surprise the operator. The only per-tick permission
-        # work is `share_repo`, since the worktree path varies per tick.
-        if not claude_env.autoclaude_user_exists():
-            msg = (
-                f"system user '{claude_env.AUTOCLAUDE_USER}' is not provisioned on this host, but "
-                "is required to run claude as non-root. "
-                "Run `autoclaude init --user-autoclaude` to create it (and adjust the necessary "
-                "permissions) before starting ticks."
-            )
-            raise UserCreationError(msg)
+    # The `autoclaude` user is created by `autoclaude init` only when needed
+    # (root + bypassPermissions) or when the operator forced it via
+    # `--user-autoclaude`. Honor that decision: if the user exists we drop to
+    # it, otherwise we keep the current uid. This means an operator running
+    # in `defaultMode=auto` (no autoclaude user) ticks as root, while a
+    # bypass-mode host (autoclaude user provisioned) drops privileges
+    # transparently.
+    if claude_env.is_root() and claude_env.autoclaude_user_exists():
         # Single entry point for the per-tick shares the wrapped claude
         # subprocess depends on (credentials, gh, worktree). Centralising
         # this guarantees that any future launch path that hits ``run_step``
@@ -531,6 +526,21 @@ def _build_claude_argv(prompt: str, *, cwd: Path) -> tuple[list[str], dict[str, 
         # same session files as the parent claude, hanging in epoll_wait forever.
         env_overrides.update(claude_env.autoclaude_subprocess_env_overrides())
         claude_env.log_mode_once(f"[claude_env] sandbox_user={claude_env.AUTOCLAUDE_USER} (host UID=0)")
+    elif claude_env.is_root() and bypass:
+        # Root + bypassPermissions without the autoclaude user is the one
+        # combination claude itself refuses to run; surface the actionable
+        # remediation here instead of letting the operator chase a cryptic
+        # stream-json error a few seconds later.
+        msg = (
+            f"system user '{claude_env.AUTOCLAUDE_USER}' is not provisioned on this host, "
+            "but is required to run claude as non-root in bypassPermissions mode "
+            "(claude refuses --permission-mode bypassPermissions when running as root). "
+            "Run `autoclaude init --user-autoclaude` to create it (and adjust the "
+            "necessary permissions) before starting ticks."
+        )
+        raise UserCreationError(msg)
+    else:
+        claude_env.log_mode_once("[claude_env] sandbox_user=<current> (autoclaude user not provisioned)")
     return argv, env_overrides
 
 

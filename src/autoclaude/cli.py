@@ -222,13 +222,9 @@ def profiles_list() -> None:
 
 
 @app.command()
-def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
+def diag(ctx: typer.Context) -> None:  # noqa: ARG001 (typer requires the context object)
     """Verify config, claude CLI, gh auth, repo checkout."""
-    _cfg, prof = _load(ctx, profile)
-    _log.info("profile: [bold]%s[/bold]", prof.name, extra={"source": "cli"})
-    _log.info("url: %s", prof.url or "[red]missing[/red]", extra={"source": "cli"})
-    _log.info("api_key set: %s", "yes" if prof.api_key else "[red]no[/red]", extra={"source": "cli"})
-    _log.info("autoclaude_root: %s", prof.resolve_autoclaude_root(), extra={"source": "cli"})
+    cfg = Config.load()
     _log.info("workspace_home: %s", workspace_home(), extra={"source": "cli"})
     _log.info("log_file: %s", log_file_path(), extra={"source": "cli"})
     streams_path = streams_dir()
@@ -272,7 +268,8 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
     )
     if runtime["autoclaude_user_required"] and not runtime["autoclaude_user_exists"]:
         _log.warning(
-            "claude runs as: [bold]%s[/bold] [yellow](autoclaude user not yet provisioned; will be created on next tick)[/yellow]",
+            "claude runs as: [bold]%s[/bold] [yellow](autoclaude user not provisioned;"
+            " bypass-mode ticks will fail until you run `autoclaude init --user-autoclaude`)[/yellow]",
             runtime["claude_runs_as"],
             extra={"source": "cli"},
         )
@@ -283,27 +280,60 @@ def diag(ctx: typer.Context, profile: ProfileOption = None) -> None:
             extra={"source": "cli"},
         )
 
-    _report_creds_watcher_state(autoclaude_required=bool(runtime["autoclaude_user_required"]))
+    _report_creds_watcher_state(autoclaude_in_use=bool(runtime["autoclaude_user_exists"]) and claude_env.is_root())
+    _report_profiles_ping(cfg)
 
+
+def _report_profiles_ping(cfg: Config) -> None:
+    """Render the ``profiles:`` block: one ping result per configured profile.
+
+    The diag command no longer selects a single active profile, so users
+    need a fleet-wide view of which credentials still reach the server.
+    """
+    # First-run config has no [profiles] section yet -- fall back to the
+    # resolved default so the user still sees a meaningful line.
+    profiles = [cfg.profiles[name] for name in sorted(cfg.profiles)] if cfg.profiles else [cfg.resolve(None)]
+
+    _log.info("profiles:", extra={"source": "cli"})
+    for prof in profiles:
+        with profile_context(prof.name):
+            _ping_profile(prof)
+
+
+def _ping_profile(prof: Profile) -> None:
+    """Render one ping-status line for ``prof``.
+
+    The active profile name is already injected into every log line by
+    ``profile_context`` (rendered as ``[<name>]`` in the Rich output), so
+    messages here do not repeat it.
+    """
+    if not prof.url:
+        _log.warning("[red]no url configured[/red]", extra={"source": "cli"})
+        return
+    if not prof.api_key:
+        _log.warning(
+            "%s [red]no api_key configured[/red]",
+            prof.url,
+            extra={"source": "cli"},
+        )
+        return
     try:
         with ApiClient(prof, cli_version=__version__) as client:
             api_ctx = client.context()
-            _report_protocol_state(client)
     except ApiError as exc:
-        _log.error("[red]context fetch failed[/red]: %s", exc, extra={"source": "cli"})
-        if exc.docs:
-            _log.info(
-                "[dim]attached docs (stage=%s, source=%s):[/dim]\n%s",
-                exc.stage,
-                exc.docs_source,
-                exc.docs,
-                extra={"source": "cli"},
-            )
+        _log.error(
+            "%s [red]ping failed[/red] (%s)",
+            prof.url,
+            exc,
+            extra={"source": "cli"},
+        )
         return
     owner = api_ctx.get("owner") or {}
+    owner_label = owner.get("email") or owner.get("username") or "?"
     _log.info(
-        "resolved owner: %s",
-        owner.get("email") or owner.get("username") or "?",
+        "%s [green]ping ok[/green] (owner=%s)",
+        prof.url,
+        owner_label,
         extra={"source": "cli"},
     )
 
@@ -319,8 +349,7 @@ def _install_creds_watcher_during_init() -> None:
         watcher = creds_watcher.install_watcher()
     except creds_watcher.CredsWatcherError as exc:
         _log.warning(
-            "[yellow]credentials watcher install failed[/yellow]: %s. "
-            "Re-run `autoclaude init --user-autoclaude` once the cause is fixed.",
+            "[yellow]credentials watcher install failed[/yellow]: %s. Re-run `autoclaude init --user-autoclaude` once the cause is fixed.",
             exc,
             extra={"source": "cli"},
         )
@@ -339,12 +368,12 @@ def _install_creds_watcher_during_init() -> None:
         )
 
 
-def _report_creds_watcher_state(*, autoclaude_required: bool) -> None:
+def _report_creds_watcher_state(*, autoclaude_in_use: bool) -> None:
     """Print the creds-watcher status line in ``diag`` output.
 
-    The watcher only matters when claude is running under the autoclaude
-    user (root + bypassPermissions on Linux). On other configurations the
-    line is suppressed to avoid noise.
+    The watcher only matters when claude actually runs as the ``autoclaude``
+    user (root + the user has been provisioned). When that is not the case
+    the line stays informational to avoid noise.
     """
     status = creds_watcher.watcher_status()
     if status == "unsupported":
@@ -353,7 +382,7 @@ def _report_creds_watcher_state(*, autoclaude_required: bool) -> None:
         _log.info("creds watcher: [green]active[/green]", extra={"source": "cli"})
         return
     if status == "not_installed":
-        if autoclaude_required:
+        if autoclaude_in_use:
             _log.warning(
                 "creds watcher: [yellow]not installed[/yellow] -- run `autoclaude init --user-autoclaude` to install it",
                 extra={"source": "cli"},
@@ -365,34 +394,6 @@ def _report_creds_watcher_state(*, autoclaude_required: bool) -> None:
             )
         return
     _log.warning("creds watcher: [yellow]%s[/yellow]", status, extra={"source": "cli"})
-
-
-def _report_protocol_state(client: ApiClient) -> None:
-    storage = RepoStorage.from_autoclaude_root(client.autoclaude_root)
-    docs_dir = storage.api_docs_dir
-    docs_count = sum(1 for _ in docs_dir.rglob("*.md")) if docs_dir.exists() else 0
-    reports_dir = storage.reports_dir
-    last_report = None
-    if reports_dir.exists():
-        candidates = sorted(reports_dir.glob("*.json"))
-        if candidates:
-            last_report = candidates[-1].name
-    _log.info("cached docs: %d", docs_count, extra={"source": "cli"})
-    _log.info("last report: %s", last_report or "[dim]none[/dim]", extra={"source": "cli"})
-    last_tick = storage.read_last_tick()
-    if last_tick:
-        _log.info(
-            "last tick: #%s status=%s cost=$%.4f",
-            last_tick.get("tick_id"),
-            last_tick.get("status"),
-            float(last_tick.get("cost_usd") or 0.0),
-            extra={"source": "cli"},
-        )
-    stages = client.tracker_snapshot()
-    if stages:
-        _log.info("protocol stages:", extra={"source": "cli"})
-        for key, stage in sorted(stages.items()):
-            _log.info("  %s -> %s", key, stage, extra={"source": "cli"})
 
 
 def _service_state(kind: str) -> str:

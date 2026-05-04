@@ -567,12 +567,12 @@ def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> d
     OS user will own the spawned ``claude`` subprocess.
 
     ``claude_runs_as`` reflects the actual current state of the system, not
-    intent: ``autoclaude`` is only returned when (a) the runner would wrap with
-    that user AND (b) the user actually exists on the host. When the wrapper is
-    intended but the user has not been provisioned yet, ``claude_runs_as``
-    reports the current effective uid's name and ``autoclaude_user_required`` /
-    ``autoclaude_user_exists`` together signal that the next tick will provision
-    it (or fail loudly if useradd is missing).
+    intent: ``autoclaude`` is only returned when (a) we are root AND (b) the
+    ``autoclaude`` system user exists. ``autoclaude init`` decides whether to
+    provision that user; the runner simply honors the result. When the user
+    is missing, the runner ticks as the current effective uid -- including in
+    bypass mode (where claude itself will refuse root + bypassPermissions and
+    surface a clear error).
     """
     home = home if home is not None else Path.home()
     cwd = cwd if cwd is not None else Path.cwd()
@@ -595,6 +595,10 @@ def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> d
     bypass = should_bypass_permissions(home=home, cwd=cwd)
     permission_mode = "bypassPermissions" if bypass else "<unset>"
 
+    # ``autoclaude_user_required`` keeps its historical meaning: claude refuses
+    # root + bypassPermissions, so without the dedicated user we cannot run a
+    # bypass-mode tick on a root host. ``autoclaude_user_exists`` is the new
+    # source of truth for whether the runner will actually wrap with runuser.
     autoclaude_required = bypass and is_root()
     autoclaude_exists = _user_exists(AUTOCLAUDE_USER)
 
@@ -603,7 +607,7 @@ def summarize_runtime(*, home: Path | None = None, cwd: Path | None = None) -> d
     except KeyError:
         current_user = f"uid={os.geteuid()}"
 
-    run_as = AUTOCLAUDE_USER if autoclaude_required and autoclaude_exists else current_user
+    run_as = AUTOCLAUDE_USER if is_root() and autoclaude_exists else current_user
 
     return {
         "user_settings_path": str(user_settings),
