@@ -399,7 +399,7 @@ def test_share_per_tick_for_autoclaude_user_calls_per_tick_helpers(monkeypatch: 
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
     monkeypatch.setattr(claude_env, "share_workspace_home", _must_not_run)
 
-    claude_env.share_per_tick_for_autoclaude_user(cwd=Path("/tmp/repo"))
+    claude_env.share_per_tick_for_autoclaude_user(cwd=Path("/tmp/repo"))  # noqa: S108
     assert calls == ["creds", "gh", "repo"]
 
     calls.clear()
