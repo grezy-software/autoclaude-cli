@@ -27,7 +27,11 @@ wheels = [
 [[package]]
 name = "autoclaude-cli"
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 version = "2.6.1"
+=======
+version = "2.5.13"
+>>>>>>> Stashed changes
 =======
 version = "2.5.13"
 >>>>>>> Stashed changes
