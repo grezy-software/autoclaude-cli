@@ -43,9 +43,9 @@ _log = get_logger("claude")
 # a failure mode (e.g. image-fetching) we cannot debug from here. Worth the cost.
 _AGENT_MODEL = "opus"
 
-# Max chars for the per-step summary shipped to the dashboard. Kept short so
-# the Steps table shows a single-line takeaway rather than a wall of text.
-_SHORT_SUMMARY_CHARS = 240
+# Max chars for the per-step summary shipped to the dashboard. Capped so the
+# Steps table shows a short takeaway (a few lines) rather than a wall of text.
+_SHORT_SUMMARY_CHARS = 500
 
 # Watchdog: once we observe a ``{"type":"result"}`` event on stdout, claude is
 # expected to flush and exit. Bun-based builds occasionally retain active
