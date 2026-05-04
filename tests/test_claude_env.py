@@ -465,7 +465,14 @@ def test_summarize_runtime_unset_non_root(tmp_path: Path, monkeypatch: pytest.Mo
     assert snap["autoclaude_user_exists"] is False
 
 
-def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_summarize_runtime_auto_mode_with_autoclaude_user_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap iff the autoclaude user exists, regardless of defaultMode.
+
+    Auto mode does not by itself disable the wrapper anymore: existence of
+    the autoclaude user is the source of truth. ``init`` only creates that
+    user when needed (or when the operator forced it), so its presence
+    means the operator opted in.
+    """
     home = tmp_path / "home"
     cwd = tmp_path / "repo"
     cwd.mkdir(parents=True)
@@ -479,9 +486,27 @@ def test_summarize_runtime_auto_mode_user_settings(tmp_path: Path, monkeypatch: 
     assert snap["project_settings_default_mode"] == "<unset>"
     assert snap["effective_default_mode"] == "auto"
     assert snap["claude_permission_mode"] == "<unset>"
-    # Root + auto mode -> claude runs as root, no autoclaude wrapper.
+    # Auto mode (no bypass) makes ``autoclaude_user_required`` False historically,
+    # but the runner still wraps because the user exists.
+    assert snap["claude_runs_as"] == "autoclaude"
+    assert snap["autoclaude_user_required"] is False
+    assert snap["autoclaude_user_exists"] is True
+
+
+def test_summarize_runtime_auto_mode_without_autoclaude_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Auto mode + no autoclaude user: claude runs as root."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    cwd.mkdir(parents=True)
+    _write_settings(home / ".claude" / "settings.json", {"permissions": {"defaultMode": "auto"}})
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env.pwd, "getpwuid", lambda _u: type("E", (), {"pw_name": "root"})())
+    monkeypatch.setattr(claude_env, "_user_exists", lambda _u: False)
+
+    snap = claude_env.summarize_runtime(home=home, cwd=cwd)
     assert snap["claude_runs_as"] == "root"
     assert snap["autoclaude_user_required"] is False
+    assert snap["autoclaude_user_exists"] is False
 
 
 def test_summarize_runtime_root_bypass_with_user_provisioned(

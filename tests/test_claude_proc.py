@@ -296,44 +296,53 @@ def test_build_argv_wraps_with_runuser_when_root(tmp_path: Path, monkeypatch: py
 def test_build_argv_returns_empty_env_when_not_wrapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Auto mode (no wrap) must NOT inject HOME -- only the autoclaude branch needs that."""
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: False)
     _argv, env_overrides = _build_claude_argv("hi", cwd=tmp_path)
     assert env_overrides == {}
 
 
-def test_build_argv_raises_when_autoclaude_user_missing(
+def test_build_argv_raises_when_root_bypass_without_autoclaude_user(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Root + bypass + user missing: bail out, do NOT create the user mid-tick."""
+    """Root + bypass + no autoclaude user is the one combination claude itself refuses.
+
+    Surface a friendly remediation here pointing the operator at
+    ``autoclaude init --user-autoclaude`` instead of letting claude fail
+    with a buried stream-json error a few seconds later.
+    """
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: None)
     monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: False)
 
     def _must_not_run(*_a: object, **_kw: object) -> None:
-        raise AssertionError("install-time helper called during tick")
+        raise AssertionError("autoclaude wrapper helper called when user missing")
 
     monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_per_tick_for_autoclaude_user", _must_not_run)
 
     with pytest.raises(UserCreationError) as excinfo:
         _build_claude_argv("hi", cwd=tmp_path)
-    assert "autoclaude init --user-autoclaude" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "autoclaude init --user-autoclaude" in message
+    assert "bypassPermissions" in message
 
 
-def test_build_argv_does_not_wrap_when_root_in_auto_mode(
+def test_build_argv_does_not_wrap_when_root_in_auto_mode_without_autoclaude_user(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Root + defaultMode=auto: no wrapping, no provisioning checks."""
+    """Root + defaultMode=auto + no autoclaude user: no wrapping, no provisioning checks."""
     monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
     monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: False)
 
     def _must_not_run(*_a: object, **_kw: object) -> None:
-        raise AssertionError("autoclaude wrapper helper called in auto mode")
+        raise AssertionError("autoclaude wrapper helper called when user missing")
 
-    monkeypatch.setattr(claude_env, "autoclaude_user_exists", _must_not_run)
-    monkeypatch.setattr(claude_env, "share_repo", _must_not_run)
+    monkeypatch.setattr(claude_env, "share_per_tick_for_autoclaude_user", _must_not_run)
     monkeypatch.setattr(claude_env, "ensure_autoclaude_user", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_config", _must_not_run)
     monkeypatch.setattr(claude_env, "share_claude_binary", _must_not_run)
@@ -343,6 +352,33 @@ def test_build_argv_does_not_wrap_when_root_in_auto_mode(
     assert "runuser" not in argv
     assert "sudo" not in argv
     assert "--permission-mode" not in argv
+
+
+def test_build_argv_wraps_when_user_exists_even_in_auto_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wrap with runuser whenever the autoclaude user exists, even in auto mode.
+
+    The autoclaude user is the source of truth: ``init`` provisions it only
+    when needed (or when forced), so its presence == intent to wrap.
+    """
+    monkeypatch.setattr(claude_env.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(claude_env, "read_default_permission_mode", lambda **_kw: "auto")
+    monkeypatch.setattr(claude_env, "autoclaude_user_exists", lambda: True)
+    monkeypatch.setattr(claude_env, "share_repo", lambda *_a, **_kw: None)
+    monkeypatch.setattr(claude_env, "share_claude_credentials", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        claude_env,
+        "autoclaude_subprocess_env_overrides",
+        lambda *_a, **_kw: {"HOME": "/home/autoclaude"},
+    )
+    monkeypatch.setattr(claude_env.shutil, "which", lambda name: "/usr/bin/runuser" if name == "runuser" else None)
+
+    argv, env_overrides = _build_claude_argv("hi", cwd=tmp_path)
+    assert argv[:5] == ["runuser", "-u", "autoclaude", "--preserve-environment", "--"]
+    assert "--permission-mode" not in argv  # auto mode -> no bypass flag
+    assert env_overrides == {"HOME": "/home/autoclaude"}
 
 
 def test_run_step_returns_failed_result_when_user_creation_fails(
