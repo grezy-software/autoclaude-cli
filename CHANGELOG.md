@@ -1,3 +1,10 @@
+## [2.6.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.4...v2.6.5) (2026-05-04)
+
+
+### Bug Fixes
+
+* **ruff:** compliance ([f941c93](https://github.com/grezy-software/autoclaude-cli/commit/f941c93227871cf911cb72c2776c5e1693cd56a8))
+
 ## [2.6.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.3...v2.6.4) (2026-05-04)
 
 
