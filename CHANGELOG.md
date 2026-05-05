@@ -1,3 +1,10 @@
+## [2.7.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.7.0...v2.7.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **watcher:** add unsupported state ([6af2eef](https://github.com/grezy-software/autoclaude-cli/commit/6af2eefcf9e6c04836d9593b7404544fc567fed6))
+
 # [2.7.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.8...v2.7.0) (2026-05-05)
 
 
