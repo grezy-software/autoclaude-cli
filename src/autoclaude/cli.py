@@ -839,7 +839,7 @@ def scheduler(
         float,
         typer.Option(
             "--interval",
-            help="Tick cadence in seconds (clamped to >= 15 minutes).",
+            help="Tick cadence in seconds (clamped to >= 5 minutes).",
         ),
     ] = SCHEDULER_DEFAULT_INTERVAL,
 ) -> None:

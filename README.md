@@ -44,7 +44,7 @@ uv tool install --force .      # or: pipx install --force ./
 # 1. Authenticate once. Defaults to https://autoclaude.grezy.org.
 #    Login also installs two per-user services:
 #      - heartbeat  (always-on liveness ping; never paused)
-#      - scheduler  (runs `autoclaude tick` every 15 minutes)
+#      - scheduler  (runs `autoclaude tick` every 5 minutes)
 autoclaude login
 
 # 2. Verify everything is wired up.

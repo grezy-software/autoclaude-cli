@@ -1,7 +1,7 @@
 """Periodic tick scheduler.
 
 Sibling to the heartbeat daemon. Runs ``runner.run_tick`` on a fixed
-interval (15 minutes minimum) so a logged-in user keeps draining the
+interval (5 minutes minimum) so a logged-in user keeps draining the
 server's tick queue without manual `autoclaude tick` invocations.
 
 Independent service from the heartbeat: pausing the scheduler stops new
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 _log = get_logger("scheduler")
 
-DEFAULT_INTERVAL_SECONDS = 15 * 60
-MIN_INTERVAL_SECONDS = 15 * 60
+DEFAULT_INTERVAL_SECONDS = 5 * 60
+MIN_INTERVAL_SECONDS = 5 * 60
 MAX_INTERVAL_SECONDS = 24 * 60 * 60
 
 
