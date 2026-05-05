@@ -1,3 +1,10 @@
+## [2.6.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.5...v2.6.6) (2026-05-05)
+
+
+### Bug Fixes
+
+* **runner:** parent agents ([7f02336](https://github.com/grezy-software/autoclaude-cli/commit/7f0233690d27ec8402059471d9e3f267133679cb))
+
 ## [2.6.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.4...v2.6.5) (2026-05-04)
 
 
