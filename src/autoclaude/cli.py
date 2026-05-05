@@ -377,6 +377,10 @@ def _report_creds_watcher_state(*, autoclaude_in_use: bool) -> None:
     """
     status = creds_watcher.watcher_status()
     if status == "unsupported":
+        _log.info(
+            "creds watcher: [dim]unsupported[/dim]",
+            extra={"source": "cli"},
+        )
         return
     if status == "active":
         _log.info("creds watcher: [green]active[/green]", extra={"source": "cli"})
@@ -389,7 +393,7 @@ def _report_creds_watcher_state(*, autoclaude_in_use: bool) -> None:
             )
         else:
             _log.info(
-                "creds watcher: [dim]not installed (not required: claude does not run as the autoclaude user)[/dim]",
+                "creds watcher: [dim]not installed[/dim]",
                 extra={"source": "cli"},
             )
         return
