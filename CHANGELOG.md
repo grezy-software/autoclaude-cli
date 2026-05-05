@@ -1,3 +1,10 @@
+## [2.7.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.7.1...v2.7.2) (2026-05-05)
+
+
+### Bug Fixes
+
+* **runner:** add 002 umask for runner ([7162364](https://github.com/grezy-software/autoclaude-cli/commit/716236482cd7224ddb95197e72e2fed0f5117e64))
+
 ## [2.7.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.7.0...v2.7.1) (2026-05-05)
 
 
