@@ -48,6 +48,7 @@ _LOG_FLUSH_TIMEOUT = 5.0
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_TOKEN_EXHAUSTED = "token_exhausted"  # noqa: S105 (status label, not a secret)
+STATUS_RATE_LIMITED = "rate_limited"
 STATUS_ABANDONED = "abandoned"
 
 KIND_SETUP = "setup"
@@ -74,6 +75,7 @@ STEP_LOG_FLUSH = "log_flush"
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_TOKEN_EXHAUSTED = 3
+EXIT_RATE_LIMITED = 5
 EXIT_ABANDONED = 130
 # Server returned 409 on tick_open: the user already holds a live tick, or
 # the picked Job is mid-tick on another runner. Concurrency is enforced
@@ -373,7 +375,7 @@ def _run_lifecycle_step(
     return ok, summary if ok else error_log
 
 
-def _execute_steps(  # noqa: PLR0911
+def _execute_steps(  # noqa: PLR0911, PLR0915
     client: ApiClient,
     state: _TickState,
     steps: list[dict[str, Any]],
@@ -479,6 +481,16 @@ def _execute_steps(  # noqa: PLR0911
                 extra={"source": "cli", "step_id": step_id},
             )
             return ordinal
+        if result.rate_limited:
+            state.status = STATUS_RATE_LIMITED
+            state.error = f"limit reached: {result.rate_limit_reason}"
+            _log.error(
+                "agent %s hit rate limit; pausing tick (%s)",
+                agent,
+                result.rate_limit_reason,
+                extra={"source": "cli", "step_id": step_id},
+            )
+            return ordinal
         if not result.ok:
             state.status = STATUS_FAILED
             state.error = error_log
@@ -498,7 +510,7 @@ def _execute_steps(  # noqa: PLR0911
                 parent_result=result,
                 start_ordinal=ordinal + 1,
             )
-            if state.status == STATUS_TOKEN_EXHAUSTED:
+            if state.status in (STATUS_TOKEN_EXHAUSTED, STATUS_RATE_LIMITED):
                 return ordinal
     return ordinal
 
@@ -681,6 +693,16 @@ def _run_tool_steps(
             _log.error(
                 "tool %s hit token exhaustion; pausing tick",
                 slug,
+                extra={"source": "cli", "step_id": tool_step_id},
+            )
+            return ordinal
+        if result.rate_limited:
+            state.status = STATUS_RATE_LIMITED
+            state.error = f"limit reached: {result.rate_limit_reason}"
+            _log.error(
+                "tool %s hit rate limit; pausing tick (%s)",
+                slug,
+                result.rate_limit_reason,
                 extra={"source": "cli", "step_id": tool_step_id},
             )
             return ordinal
@@ -1288,6 +1310,8 @@ def _run_tick_body(  # noqa: C901, PLR0911, PLR0912, PLR0915
         return EXIT_OK
     if state.status == STATUS_TOKEN_EXHAUSTED:
         return EXIT_TOKEN_EXHAUSTED
+    if state.status == STATUS_RATE_LIMITED:
+        return EXIT_RATE_LIMITED
     if state.status == STATUS_ABANDONED:
         return EXIT_ABANDONED
     return EXIT_FAILED

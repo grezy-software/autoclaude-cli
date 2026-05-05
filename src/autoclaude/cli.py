@@ -25,6 +25,7 @@ from autoclaude.log_uploader import replay_pending
 from autoclaude.logger import get_logger, log_file_path, profile_context, streams_dir
 from autoclaude.runner import (
     EXIT_ABANDONED,
+    EXIT_RATE_LIMITED,
     EXIT_TOKEN_EXHAUSTED,
 )
 from autoclaude.runner import (
@@ -584,6 +585,11 @@ def _run_tick_for_profile(prof: Profile) -> int:
             _log.error(
                 "[red]Claude subscription out of tokens.[/red] Top up at %s then re-run.",
                 CLAUDE_BILLING_URL,
+                extra={"source": "cli"},
+            )
+        elif exit_code == EXIT_RATE_LIMITED:
+            _log.error(
+                "[red]Claude rate limit reached.[/red] Wait for the announced reset time then re-run.",
                 extra={"source": "cli"},
             )
         elif exit_code == EXIT_ABANDONED:

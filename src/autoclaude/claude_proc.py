@@ -102,6 +102,26 @@ _TOKEN_EXHAUSTION_PATTERNS: tuple[str, ...] = (
     "subscription is required",
 )
 
+# Distinct from billing exhaustion: a 5h/weekly window cap that auto-resets at
+# a known time. We surface it as its own failure reason so operators don't get
+# routed to the billing top-up flow when only patience is required.
+_RATE_LIMIT_PATTERNS: tuple[str, ...] = (
+    "you've hit your limit",
+    "you have hit your limit",
+    "limit · resets",
+    "limit . resets",
+)
+
+
+def _result_haystacks(stdout: str, stderr: str, parsed: dict | None) -> list[str]:
+    haystacks: list[str] = [stdout.lower(), stderr.lower()]
+    if isinstance(parsed, dict):
+        for key in ("error", "result", "message"):
+            value = parsed.get(key)
+            if isinstance(value, str):
+                haystacks.append(value.lower())
+    return haystacks
+
 
 def detect_token_exhaustion(stdout: str, stderr: str, parsed: dict | None) -> bool:
     """Return True when the ``claude`` run signals an out-of-tokens condition.
@@ -109,13 +129,36 @@ def detect_token_exhaustion(stdout: str, stderr: str, parsed: dict | None) -> bo
     Heuristic: matched case-insensitively across stdout, stderr, and the common
     string fields of the parsed JSON result.
     """
-    haystacks: list[str] = [stdout.lower(), stderr.lower()]
-    if isinstance(parsed, dict):
-        for key in ("error", "result", "message"):
-            value = parsed.get(key)
-            if isinstance(value, str):
-                haystacks.append(value.lower())
+    haystacks = _result_haystacks(stdout, stderr, parsed)
     return any(pattern in h for pattern in _TOKEN_EXHAUSTION_PATTERNS for h in haystacks)
+
+
+def _parsed_result_text(parsed: dict | None) -> str:
+    if not isinstance(parsed, dict):
+        return ""
+    text = parsed.get("result")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def detect_rate_limit(stdout: str, stderr: str, parsed: dict | None) -> str:
+    """Return a non-empty reason string when ``claude`` was rate-limited.
+
+    Detects three signals: text patterns ("you've hit your limit · resets …"),
+    ``api_error_status == 429`` on the result event, and ``error == "rate_limit"``
+    on the assistant event echoed inside the result payload.
+    """
+    parsed_text = _parsed_result_text(parsed)
+    if isinstance(parsed, dict):
+        if parsed.get("api_error_status") == 429:
+            return parsed_text or "rate limit reached (HTTP 429)"
+        err = parsed.get("error")
+        if isinstance(err, str) and err.strip().lower() == "rate_limit":
+            return parsed_text or "rate limit reached"
+    for h in _result_haystacks(stdout, stderr, parsed):
+        for pattern in _RATE_LIMIT_PATTERNS:
+            if pattern in h:
+                return parsed_text or pattern
+    return ""
 
 
 @dataclass
@@ -128,6 +171,8 @@ class ClaudeResult:
     token_cost_estimate: int = 0
     duration_ms: int = 0
     token_exhausted: bool = False
+    rate_limited: bool = False
+    rate_limit_reason: str = ""
     summary: str = ""
     fail_reason: str = ""
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -724,8 +769,10 @@ def run_step(  # noqa: C901, PLR0912, PLR0915 (subprocess lifecycle: setup, thre
     if not session_id and isinstance(init_event, dict):
         session_id = str(init_event.get("session_id") or "")
     token_exhausted = detect_token_exhaustion(stdout_text, stderr_text, result_event)
+    rate_limit_reason = detect_rate_limit(stdout_text, stderr_text, result_event)
+    rate_limited = bool(rate_limit_reason)
     result_text = _extract_result_text(result_event) or _collect_assistant_text(events)
-    fail_reason = _extract_fail_marker(result_text)
+    fail_reason = _extract_fail_marker(result_text) or (rate_limit_reason if rate_limited else "")
     is_error_flag = bool(result_event.get("is_error")) if isinstance(result_event, dict) else False
     summary = _build_short_summary(result_text, fail_reason=fail_reason, stderr=stderr_text, returncode=returncode)
     # ok semantics under the watchdog:
@@ -782,6 +829,8 @@ def run_step(  # noqa: C901, PLR0912, PLR0915 (subprocess lifecycle: setup, thre
         token_cost_estimate=tokens,
         duration_ms=duration_ms,
         token_exhausted=token_exhausted,
+        rate_limited=rate_limited,
+        rate_limit_reason=rate_limit_reason,
         summary=summary,
         fail_reason=fail_reason,
         events=events,

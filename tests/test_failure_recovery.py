@@ -9,7 +9,7 @@ from typing import Any, Self
 import pytest
 
 from autoclaude.api_client import ApiError
-from autoclaude.claude_proc import ClaudeResult, detect_token_exhaustion
+from autoclaude.claude_proc import ClaudeResult, detect_rate_limit, detect_token_exhaustion
 from autoclaude.runner import (
     EXIT_OK,
     EXIT_TOKEN_EXHAUSTED,
@@ -78,6 +78,30 @@ def workspace_factory(tmp_path, monkeypatch):
 )
 def test_detect_token_exhaustion(stdout: str, stderr: str, parsed: dict | None, *, expected: bool) -> None:
     assert detect_token_exhaustion(stdout, stderr, parsed) is expected
+
+
+# --- detect_rate_limit ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "parsed", "expected_truthy"),
+    [
+        ("", "", None, False),
+        ("", "", {"result": "all good"}, False),
+        (
+            "",
+            "",
+            {"result": "You've hit your limit · resets 7:10pm (Europe/Paris)", "is_error": True},
+            True,
+        ),
+        ("", "", {"api_error_status": 429, "result": "limit reached"}, True),
+        ("", "", {"error": "rate_limit", "result": "blocked"}, True),
+        ("you've hit your limit later today", "", None, True),
+        ("", "Credit balance is too low.", None, False),
+    ],
+)
+def test_detect_rate_limit(stdout: str, stderr: str, parsed: dict | None, *, expected_truthy: bool) -> None:
+    assert bool(detect_rate_limit(stdout, stderr, parsed)) is expected_truthy
 
 
 # --- _build_resumption_banner -----------------------------------------------
