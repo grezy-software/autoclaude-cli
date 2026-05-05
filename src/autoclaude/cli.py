@@ -106,6 +106,11 @@ def _main(
     ] = False,
 ) -> None:
     """Shared options. `--profile` works here or on any subcommand."""
+    # Force g+w on every file/dir created by this process (and its git/chmod
+    # subprocesses). Combined with the setgid bit on ~/.autoclaude, this
+    # guarantees new worktree paths stay writable by the `autoclaude` group
+    # even when the runner is launched as root with the default 0022 umask.
+    os.umask(0o002)
     ctx.obj = {"profile": profile}
     _surface_update_status(ctx)
 
