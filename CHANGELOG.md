@@ -1,3 +1,10 @@
+## [2.6.8](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.7...v2.6.8) (2026-05-05)
+
+
+### Bug Fixes
+
+* **gitignore:** added .vscode ([964ce09](https://github.com/grezy-software/autoclaude-cli/commit/964ce09f629dca1df4af837422116769efeab3a0))
+
 ## [2.6.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.5...v2.6.6) (2026-05-05)
 
 
