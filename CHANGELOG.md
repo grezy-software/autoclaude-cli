@@ -1,3 +1,24 @@
+# [2.7.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.8...v2.7.0) (2026-05-05)
+
+
+### Features
+
+* **scheduler:** poll every 5 minutes instead of 15 ([73d3f13](https://github.com/grezy-software/autoclaude-cli/commit/73d3f13aa4561fa5d927f9e19240da5b8539a324))
+
+## [2.6.8](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.7...v2.6.8) (2026-05-05)
+
+
+### Bug Fixes
+
+* **gitignore:** added .vscode ([964ce09](https://github.com/grezy-software/autoclaude-cli/commit/964ce09f629dca1df4af837422116769efeab3a0))
+
+## [2.6.6](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.5...v2.6.6) (2026-05-05)
+
+
+### Bug Fixes
+
+* **runner:** parent agents ([7f02336](https://github.com/grezy-software/autoclaude-cli/commit/7f0233690d27ec8402059471d9e3f267133679cb))
+
 ## [2.6.5](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.4...v2.6.5) (2026-05-04)
 
 

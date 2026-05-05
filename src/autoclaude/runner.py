@@ -648,11 +648,14 @@ def _run_tool_steps(
         )
         storage.write_step_prompt(state.tick_id, tool_step_id, prompt)
         _log.info("[cyan]→[/cyan] tool %s", slug, extra={"source": "cli", "step_id": tool_step_id})
+        tool_env = _step_env(client, parent_step, tick_id=state.tick_id)
+        tool_env["AUTOCLAUDE_PARENT_AGENT_SLUG"] = agent_slug
+        tool_env["AUTOCLAUDE_PARENT_SUMMARY"] = parent_result.summary or ""
         result = run_step(
             prompt,
             cwd=repo_checkout,
             step_id=tool_step_id,
-            env=_step_env(client, parent_step, tick_id=state.tick_id),
+            env=tool_env,
         )
         storage.write_step_streams(state.tick_id, tool_step_id, stdout=result.stdout, stderr=result.stderr)
         state.total_cost += result.total_cost_usd

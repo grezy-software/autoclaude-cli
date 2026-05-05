@@ -1,6 +1,8 @@
 # autoclaude-cli
 
-Local runner for [AutoClaude](https://github.com/grezy-software/grezy). Executes orchestration plans handed down from the server using **your own Claude Max/Pro subscription**. The server never pays for tokens.
+Local runner for [AutoClaude](https://autoclaude.grezy.org). Executes orchestration plans handed down from the server using **your own Claude Max/Pro subscription**. The server never pays for tokens.
+
+> **AutoClaude** turns Claude Code into an always-on teammate. Schedule plans, ship work overnight, and track costs from one dashboard. Sign up at **[autoclaude.grezy.org](https://autoclaude.grezy.org)**.
 
 ## Requirements
 
@@ -42,7 +44,7 @@ uv tool install --force .      # or: pipx install --force ./
 # 1. Authenticate once. Defaults to https://autoclaude.grezy.org.
 #    Login also installs two per-user services:
 #      - heartbeat  (always-on liveness ping; never paused)
-#      - scheduler  (runs `autoclaude tick` every 15 minutes)
+#      - scheduler  (runs `autoclaude tick` every 5 minutes)
 autoclaude login
 
 # 2. Verify everything is wired up.

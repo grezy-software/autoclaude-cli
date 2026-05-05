@@ -57,13 +57,14 @@ _DEFAULT_POST_RESULT_GRACE_SECS = 30.0
 
 # Watchdog: kill if no output has been seen on either stream for this long.
 # Catches hangs that occur BEFORE the result event (pre-init hang where claude
-# never emits its ``system`` event, mid-stream Bun freeze, etc.). Set to 5 min:
+# never emits its ``system`` event, mid-stream Bun freeze, etc.). Set to 15 min:
 # in ``-p stream-json --verbose`` mode claude streams an event for every
-# tool_use, tool_result, and incremental assistant text block, so a 5 min total
+# tool_use, tool_result, and incremental assistant text block, so prolonged
 # silence is well outside normal behavior. Long single tool calls (e.g. a slow
-# pytest) emit ``tool_use`` immediately and are bounded by the tool's own
-# timeout, so they do not trigger a false positive.
-_DEFAULT_IDLE_TIMEOUT_SECS: float | None = 300.0
+# pytest, large PDF reads) emit ``tool_use`` immediately and are bounded by the
+# tool's own timeout; the 15 min budget gives those tools room without masking
+# a real hang. Server-side reaper catches truly stale ticks via heartbeat.
+_DEFAULT_IDLE_TIMEOUT_SECS: float | None = 900.0
 
 # Polling interval of the watchdog loop. The trade-off is between extra wakeups
 # and the granularity at which kill_reason is detected. 0.5s is well below the
