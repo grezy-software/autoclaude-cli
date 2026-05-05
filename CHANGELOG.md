@@ -1,3 +1,10 @@
+# [2.7.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.8...v2.7.0) (2026-05-05)
+
+
+### Features
+
+* **scheduler:** poll every 5 minutes instead of 15 ([73d3f13](https://github.com/grezy-software/autoclaude-cli/commit/73d3f13aa4561fa5d927f9e19240da5b8539a324))
+
 ## [2.6.8](https://github.com/grezy-software/autoclaude-cli/compare/v2.6.7...v2.6.8) (2026-05-05)
 
 
