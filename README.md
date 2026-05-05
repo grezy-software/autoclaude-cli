@@ -1,6 +1,8 @@
 # autoclaude-cli
 
-Local runner for [AutoClaude](https://github.com/grezy-software/grezy). Executes orchestration plans handed down from the server using **your own Claude Max/Pro subscription**. The server never pays for tokens.
+Local runner for [AutoClaude](https://autoclaude.grezy.org). Executes orchestration plans handed down from the server using **your own Claude Max/Pro subscription**. The server never pays for tokens.
+
+> **AutoClaude** turns Claude Code into an always-on teammate. Schedule plans, ship work overnight, and track costs from one dashboard. Sign up at **[autoclaude.grezy.org](https://autoclaude.grezy.org)**.
 
 ## Requirements
 
