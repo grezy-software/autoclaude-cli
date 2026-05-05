@@ -1,3 +1,10 @@
+# [2.8.0](https://github.com/grezy-software/autoclaude-cli/compare/v2.7.2...v2.8.0) (2026-05-05)
+
+
+### Features
+
+* **claude_proc:** parse rate-limit errors as distinct failure reason ([7314cf6](https://github.com/grezy-software/autoclaude-cli/commit/7314cf6a12769bb39933ff84db2abbbd0c738f1d))
+
 ## [2.7.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.7.1...v2.7.2) (2026-05-05)
 
 
