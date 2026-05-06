@@ -184,12 +184,14 @@ def repo_create(repo: str, *, private: bool = True) -> None:
     """Create ``<owner>/<name>`` on GitHub via ``gh repo create``.
 
     ``--private`` is the default; pass ``private=False`` only when the
-    project's policy explicitly opts into a public repo. The repo is left
-    empty -- the runner pushes commits later through the normal worktree
-    flow once it has work to ship.
+    project's policy explicitly opts into a public repo. ``--add-readme``
+    seeds an initial commit so the remote's default branch (``main``) exists
+    immediately; without it, ``git worktree add ... origin/main`` on the
+    very first tick fails with ``invalid reference: origin/main`` because
+    the remote has no commits yet.
     """
     visibility = "--private" if private else "--public"
-    gh(["repo", "create", repo, visibility])
+    gh(["repo", "create", repo, visibility, "--add-readme"])
 
 
 __all__ = [
