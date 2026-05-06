@@ -223,6 +223,26 @@ class Workspace:
         )
         if probe.returncode == 0:
             return
+        # Ref missing locally — try a targeted fetch first; the branch may exist
+        # on the remote and just not have been pulled yet (e.g. a clone that
+        # only fetched the default branch, or a stale clone).
+        _git(
+            [
+                *_gh_credential_helper_args(),
+                "fetch",
+                "origin",
+                f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+            ],
+            cwd=self.clone_path,
+            check=False,
+        )
+        probe = _git(
+            ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=self.clone_path,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return
         _log.info(
             "remote has no %s; seeding empty commit and pushing",
             branch,
@@ -276,6 +296,11 @@ class Workspace:
         # A previous tick run may have left the branch behind (remove_worktree
         # preserves branches by design). On retry, drop it so `-b` succeeds.
         _git(["branch", "-D", branch], cwd=self.clone_path, check=False)
+        # If forking from origin/<branch>, make sure the remote-tracking ref
+        # actually resolves locally; on a freshly-created empty repo it may
+        # not exist yet, so seed it with an empty commit. No-op when present.
+        if base.startswith("origin/"):
+            self.ensure_remote_branch(base.removeprefix("origin/"))
         _git(
             ["worktree", "add", "-b", branch, str(target), base],
             cwd=self.clone_path,
