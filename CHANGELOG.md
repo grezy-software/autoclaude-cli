@@ -1,3 +1,10 @@
+## [2.8.2](https://github.com/grezy-software/autoclaude-cli/compare/v2.8.1...v2.8.2) (2026-05-06)
+
+
+### Bug Fixes
+
+* **gh:** repo creation fixed ([5bb102f](https://github.com/grezy-software/autoclaude-cli/commit/5bb102faf4d4b48ea2338c3fc90b51ee6a0e2f81))
+
 ## [2.8.1](https://github.com/grezy-software/autoclaude-cli/compare/v2.8.0...v2.8.1) (2026-05-06)
 
 
