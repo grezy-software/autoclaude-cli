@@ -204,6 +204,57 @@ class Workspace:
             _git(["fetch", "--prune", "origin"], cwd=self.clone_path)
         return self.clone_path
 
+    def ensure_remote_branch(self, branch: str) -> None:
+        """Ensure ``origin/<branch>`` exists; seed it with an empty commit if not.
+
+        Empty GitHub repos (just created, or pre-existing without commits)
+        have no default-branch ref, so ``git worktree add ... origin/<branch>``
+        fails with ``invalid reference: origin/<branch>``. This pushes a
+        single empty seed commit on ``<branch>`` so subsequent ticks can
+        fork from ``origin/<branch>`` normally. No-op for local-path
+        workspaces (test fixtures): they own their refs already.
+        """
+        if not self._owner_repo:
+            return
+        probe = _git(
+            ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            cwd=self.clone_path,
+            check=False,
+        )
+        if probe.returncode == 0:
+            return
+        _log.info(
+            "remote has no %s; seeding empty commit and pushing",
+            branch,
+            extra={"source": "workspace"},
+        )
+        # Point HEAD at <branch> regardless of whatever empty-clone state we
+        # landed in, then create a single empty commit. ``--allow-empty``
+        # avoids needing a working tree change. Inline ``user.name``/
+        # ``user.email`` so we never depend on (or mutate) global git config.
+        _git(["symbolic-ref", "HEAD", f"refs/heads/{branch}"], cwd=self.clone_path)
+        _git(
+            [
+                "-c",
+                "user.email=autoclaude@local",
+                "-c",
+                "user.name=autoclaude",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial commit",
+            ],
+            cwd=self.clone_path,
+        )
+        _git(
+            [*_gh_credential_helper_args(), "push", "-u", "origin", branch],
+            cwd=self.clone_path,
+        )
+        _git(
+            [*_gh_credential_helper_args(), "fetch", "--prune", "origin"],
+            cwd=self.clone_path,
+        )
+
     # --- worktrees ------------------------------------------------------------
 
     def create_worktree(self, tick_id: int, *, base: str = "HEAD") -> Worktree:

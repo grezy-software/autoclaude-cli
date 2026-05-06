@@ -957,10 +957,12 @@ def run_tick(client: ApiClient, *, workspace_factory: Callable[[str], Workspace]
             return EXIT_FAILED
 
     factory = workspace_factory or Workspace.for_github_repo
+    default_branch = str(project.get("default_branch") or "").strip() or "main"
     repo_sync_started = _utcnow()
     try:
         workspace = factory(github_repo)
         workspace.sync()
+        workspace.ensure_remote_branch(default_branch)
     except WorkspaceError as exc:
         _log.error("[red]workspace sync failed[/red]: %s", exc, extra={"source": "cli"})
         return EXIT_FAILED
