@@ -26,6 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -185,6 +186,22 @@ def _macos_remove_legacy() -> None:
         legacy_plist.unlink()
 
 
+def _macos_wait_unloaded(uid: int, label: str, timeout: float = 5.0) -> None:
+    """Poll until launchd no longer knows about ``label`` in the gui domain.
+
+    ``launchctl bootout`` returns before the agent process has fully exited,
+    so an immediate ``bootstrap`` races with the tear-down and fails with
+    EIO (errno 5). Poll ``print`` until the label disappears.
+    """
+    deadline = time.monotonic() + timeout
+    target = f"gui/{uid}/{label}"
+    while time.monotonic() < deadline:
+        result = _run(["launchctl", "print", target])
+        if result.returncode != 0:
+            return
+        time.sleep(0.1)
+
+
 def _macos_bootstrap(kind: ServiceKind, binary: str) -> InstallResult:
     plist_path = _macos_plist_path(kind)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +210,7 @@ def _macos_bootstrap(kind: ServiceKind, binary: str) -> InstallResult:
     uid = _macos_uid()
     label = _label(kind)
     _run(["launchctl", "bootout", f"gui/{uid}/{label}"])
+    _macos_wait_unloaded(uid, label)
     _run(["launchctl", "enable", f"gui/{uid}/{label}"])
     result = _run(["launchctl", "bootstrap", f"gui/{uid}", str(plist_path)])
     if result.returncode != 0:
