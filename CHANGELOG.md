@@ -1,3 +1,10 @@
+## [2.8.4](https://github.com/grezy-software/autoclaude-cli/compare/v2.8.3...v2.8.4) (2026-05-07)
+
+
+### Bug Fixes
+
+* **macos:** install-services ([7fb9c55](https://github.com/grezy-software/autoclaude-cli/commit/7fb9c55db76d37c727d81cb4a9220e732806fd74))
+
 ## [2.8.3](https://github.com/grezy-software/autoclaude-cli/compare/v2.8.2...v2.8.3) (2026-05-06)
 
 
