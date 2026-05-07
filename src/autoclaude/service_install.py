@@ -188,6 +188,7 @@ def _macos_remove_legacy() -> None:
 def _macos_bootstrap(kind: ServiceKind, binary: str) -> InstallResult:
     plist_path = _macos_plist_path(kind)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
+    (Path.home() / ".config" / "autoclaude" / "logs").mkdir(parents=True, exist_ok=True)
     plist_path.write_text(_macos_plist(binary, kind))
     uid = _macos_uid()
     label = _label(kind)
