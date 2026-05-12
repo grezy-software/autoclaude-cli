@@ -19,8 +19,7 @@ def test_logger_level_is_debug() -> None:
     """
     log = autoclaude_logger.get_logger()
     assert log.level == logging.DEBUG, (
-        f"autoclaude logger level is {logging.getLevelName(log.level)}; "
-        f"DEBUG records would be filtered before reaching the file handler."
+        f"autoclaude logger level is {logging.getLevelName(log.level)}; DEBUG records would be filtered before reaching the file handler."
     )
 
 
@@ -32,10 +31,7 @@ def test_file_handler_captures_debug() -> None:
     """
     log = autoclaude_logger.get_logger()
     debug_capable = [h for h in log.handlers if h.level <= logging.DEBUG]
-    assert debug_capable, (
-        "no handler on the autoclaude logger accepts DEBUG records; "
-        "tick failure context will be invisible in the log file."
-    )
+    assert debug_capable, "no handler on the autoclaude logger accepts DEBUG records; tick failure context will be invisible in the log file."
 
 
 def test_file_formatter_renders_local_time_not_utc() -> None:
@@ -87,7 +83,8 @@ def test_streams_dir_is_under_log_dir() -> None:
 
 
 def test_allocate_stream_log_path_creates_dir_and_returns_unique_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify path is unique per call and the directory is auto-created.
 
@@ -112,7 +109,8 @@ def test_allocate_stream_log_path_creates_dir_and_returns_unique_path(
 
 
 def test_allocate_stream_log_path_prunes_to_backup_count(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """After enough allocations, only ``STREAMS_BACKUP_COUNT`` files remain.
 
@@ -142,10 +140,7 @@ def test_allocate_stream_log_path_prunes_to_backup_count(
     new_path.write_text("new\n")  # actually create it so the count check is correct
 
     remaining = sorted(streams.glob("claude-stream-*.log"))
-    assert len(remaining) == keep, (
-        f"expected {keep} files after allocation+write; got {len(remaining)}: "
-        f"{[p.name for p in remaining]}"
-    )
+    assert len(remaining) == keep, f"expected {keep} files after allocation+write; got {len(remaining)}: {[p.name for p in remaining]}"
     # The newest pre-existing files are kept; the oldest ones are pruned.
     kept_names = {p.name for p in remaining}
     assert new_path.name in kept_names
@@ -162,6 +157,5 @@ def test_console_handler_stays_at_info_or_above() -> None:
     assert rich_handlers, "expected a Rich console handler on the autoclaude logger"
     for h in rich_handlers:
         assert h.level >= logging.INFO, (
-            f"Rich console handler is at {logging.getLevelName(h.level)}; "
-            f"keeping it at INFO or above avoids flooding the terminal."
+            f"Rich console handler is at {logging.getLevelName(h.level)}; keeping it at INFO or above avoids flooding the terminal."
         )

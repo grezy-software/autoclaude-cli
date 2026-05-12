@@ -899,11 +899,7 @@ def _collect_assistant_text(events: list[dict[str, Any]]) -> str:
         if not isinstance(event, dict) or event.get("type") != "assistant":
             continue
         msg = event.get("message") or {}
-        parts = [
-            block.get("text") or ""
-            for block in (msg.get("content") or [])
-            if isinstance(block, dict) and block.get("type") == "text"
-        ]
+        parts = [block.get("text") or "" for block in (msg.get("content") or []) if isinstance(block, dict) and block.get("type") == "text"]
         joined = "\n".join(p for p in parts if p)
         if joined:
             return joined.strip()

@@ -138,10 +138,7 @@ def _service_path() -> str:
 def _macos_plist(binary: str, kind: ServiceKind) -> str:
     label = _label(kind)
     subcommand = _service_subcommand(kind)
-    program_args = "\n".join(
-        f"        <string>{piece}</string>"
-        for piece in [*binary.split(), subcommand]
-    )
+    program_args = "\n".join(f"        <string>{piece}</string>" for piece in [*binary.split(), subcommand])
     log_dir = Path.home() / ".config" / "autoclaude" / "logs"
     return f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">

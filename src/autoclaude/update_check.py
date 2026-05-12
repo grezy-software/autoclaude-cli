@@ -286,15 +286,9 @@ def format_console_notice(status: UpdateStatus) -> str | None:
     Caller is expected to print via the CLI logger (which renders rich markup).
     """
     if status.blocking:
-        return (
-            f"[bold red]AutoClaude requires >= {status.minimum}[/bold red] "
-            f"(you have {status.current}). Run: [bold]{UPGRADE_HINT}[/bold]"
-        )
+        return f"[bold red]AutoClaude requires >= {status.minimum}[/bold red] (you have {status.current}). Run: [bold]{UPGRADE_HINT}[/bold]"
     if status.outdated:
-        return (
-            f"[yellow]autoclaude {status.latest} available[/yellow] "
-            f"(you have {status.current}). Run: [bold]{UPGRADE_HINT}[/bold]"
-        )
+        return f"[yellow]autoclaude {status.latest} available[/yellow] (you have {status.current}). Run: [bold]{UPGRADE_HINT}[/bold]"
     return None
 
 

@@ -144,8 +144,7 @@ def _ensure_inotifywait() -> bool:
     apt = shutil.which("apt-get")
     if not apt:
         _log.warning(
-            "inotifywait is missing and apt-get is unavailable; install"
-            " inotify-tools manually then re-run `autoclaude init --user-autoclaude`.",
+            "inotifywait is missing and apt-get is unavailable; install inotify-tools manually then re-run `autoclaude init --user-autoclaude`.",
         )
         return False
     _log.info("installing inotify-tools (required by the credentials watcher)...")
@@ -202,10 +201,7 @@ def install_watcher(
     _systemctl(["daemon-reload"])
     result = _systemctl(["enable", "--now", WATCHER_SYSTEMD_UNIT])
     if result.returncode != 0:
-        msg = (
-            f"systemctl --user enable --now {WATCHER_SYSTEMD_UNIT} failed: "
-            f"{(result.stderr or result.stdout).strip()}"
-        )
+        msg = f"systemctl --user enable --now {WATCHER_SYSTEMD_UNIT} failed: {(result.stderr or result.stdout).strip()}"
         raise CredsWatcherError(msg)
     return WatcherInstallResult(action="installed", detail=str(unit_path))
 

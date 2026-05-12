@@ -127,8 +127,7 @@ class Daemon:
         maybe_notify(status)
         if status.blocking:
             _log.error(
-                "[red]autoclaude %s is below required minimum %s; daemon stopping. "
-                "Upgrade with: uv tool upgrade autoclaude-cli[/red]",
+                "[red]autoclaude %s is below required minimum %s; daemon stopping. Upgrade with: uv tool upgrade autoclaude-cli[/red]",
                 status.current,
                 status.minimum,
                 extra={"source": "cli"},

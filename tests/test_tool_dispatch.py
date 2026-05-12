@@ -107,9 +107,7 @@ def test_build_tool_prompt_inlines_instructions() -> None:
 
 
 def test_resolve_tool_command_body_strips_frontmatter(storage: RepoStorage) -> None:
-    storage.write_tool_manifest(
-        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
-    )
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]})
     body = _resolve_tool_command_body(storage, "discord")
     assert body == "Run curl with $TOKEN."
 
@@ -155,12 +153,8 @@ def test_run_tool_steps_dispatches_one_step_per_tool(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
-    storage.write_tool_manifest(
-        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
-    )
-    storage.write_tool_manifest(
-        "blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]}
-    )
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]})
+    storage.write_tool_manifest("blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]})
     _install_run_step(monkeypatch, ClaudeResult(ok=True, stdout="ok", stderr="", summary="posted"))
     client = _FakeClient()
     parent_step = {"agent_slug": "issuer", "agent_config_id": 7, "prompt": "first"}
@@ -195,9 +189,7 @@ def test_run_tool_steps_failure_is_non_fatal(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
-    storage.write_tool_manifest(
-        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
-    )
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]})
     _install_run_step(
         monkeypatch,
         ClaudeResult(ok=False, stdout="", stderr="boom", summary="", fail_reason=""),
@@ -228,12 +220,8 @@ def test_run_tool_steps_token_exhaustion_bubbles_up(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
-    storage.write_tool_manifest(
-        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
-    )
-    storage.write_tool_manifest(
-        "blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]}
-    )
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]})
+    storage.write_tool_manifest("blogger", {"commands": [{"name": "blogger", "body": "Write blog."}]})
     _install_run_step(
         monkeypatch,
         ClaudeResult(ok=False, stdout="", stderr="Credit balance is too low.", token_exhausted=True),
@@ -263,9 +251,7 @@ def test_run_tool_steps_skips_when_open_step_fails(
     state: _TickState,
     tmp_path: Path,
 ) -> None:
-    storage.write_tool_manifest(
-        "discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]}
-    )
+    storage.write_tool_manifest("discord", {"commands": [{"name": "discord-post", "body": _DISCORD_BODY}]})
     calls = _install_run_step(monkeypatch, ClaudeResult(ok=True, stdout="x", stderr=""))
 
     class _BrokenClient(_FakeClient):

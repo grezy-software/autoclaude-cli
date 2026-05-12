@@ -29,10 +29,13 @@ def test_get_or_create_identity_repairs_corrupt_file(tmp_path: Path, monkeypatch
 
 def test_get_or_create_identity_includes_hostname_and_platform(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(installation, "config_dir", lambda: tmp_path)
-    with patch.object(installation, "_detect_hostname", return_value="laptop.local"), patch.object(
-        installation.sys,
-        "platform",
-        "darwin",
+    with (
+        patch.object(installation, "_detect_hostname", return_value="laptop.local"),
+        patch.object(
+            installation.sys,
+            "platform",
+            "darwin",
+        ),
     ):
         identity = installation.get_or_create_identity()
     assert identity.hostname == "laptop.local"

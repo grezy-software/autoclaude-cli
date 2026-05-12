@@ -216,10 +216,7 @@ def test_run_step_logs_command_when_subprocess_fails(tmp_path: Path, monkeypatch
         claude_logger.removeHandler(capture)
 
     assert not result.ok
-    exec_errors = [
-        r for r in records
-        if getattr(r, "source", None) == "claude_exec" and r.levelno >= logging.ERROR
-    ]
+    exec_errors = [r for r in records if getattr(r, "source", None) == "claude_exec" and r.levelno >= logging.ERROR]
     assert exec_errors, "expected an ERROR log line containing the failed command"
     message = exec_errors[0].getMessage()
     assert "claude" in message
@@ -471,10 +468,7 @@ def test_run_step_kills_after_post_result_grace_when_subprocess_hangs(
         timeout=30,
     )
 
-    assert result.duration_ms < 5_000, (
-        f"watchdog should have killed the hung subprocess; "
-        f"actual duration_ms={result.duration_ms}"
-    )
+    assert result.duration_ms < 5_000, f"watchdog should have killed the hung subprocess; actual duration_ms={result.duration_ms}"
     assert result.ok is True, "post-result kill is internal cleanup, not a failure"
     assert result.session_id == "sess-1"
     assert any(e.get("type") == "result" for e in result.events)
@@ -634,8 +628,7 @@ def test_run_step_stream_archive_rotates_to_at_most_five(
 
     files = sorted(streams.glob("claude-stream-*.log"))
     assert len(files) == logger.STREAMS_BACKUP_COUNT, (
-        f"expected exactly {logger.STREAMS_BACKUP_COUNT} files after rotation; "
-        f"got {len(files)}: {[p.name for p in files]}"
+        f"expected exactly {logger.STREAMS_BACKUP_COUNT} files after rotation; got {len(files)}: {[p.name for p in files]}"
     )
     # The brand-new step-7 archive must be present.
     names = {p.name for p in files}

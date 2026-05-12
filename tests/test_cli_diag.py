@@ -182,6 +182,4 @@ def test_empty_config_falls_back_to_default_profile(
 def test_diag_command_has_no_profile_option() -> None:
     """``autoclaude diag`` no longer accepts ``--profile``: the command is fleet-wide."""
     sig = inspect.signature(cli.diag)
-    assert list(sig.parameters) == ["ctx"], (
-        f"diag signature should only take ctx, got {list(sig.parameters)}"
-    )
+    assert list(sig.parameters) == ["ctx"], f"diag signature should only take ctx, got {list(sig.parameters)}"
